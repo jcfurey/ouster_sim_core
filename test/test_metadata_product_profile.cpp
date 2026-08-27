@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <string>
 
 #ifndef OUSTER_SIM_CORE_TEST_DATA_DIR
@@ -146,6 +147,28 @@ TEST(OusterMetadataProductProfile, ExposesActiveWireContractWithoutSdkTypes)
         "RNG19_RFL8_SIG16_NIR16_DUAL");
     EXPECT_EQ(dual.activeReturnCount(), 2u);
     EXPECT_THROW(dual.requirePrimaryReturnProfile(), std::invalid_argument);
+}
+
+TEST(OusterMetadataProductProfile, DerivesPacketFrameIdAtLayoutWidth)
+{
+    const auto standard = OusterMetadata::fromFile(metadataPath());
+    EXPECT_EQ(standard.packetFrameId(0), 0u);
+    EXPECT_EQ(standard.packetFrameId(65'535), 65'535u);
+    EXPECT_EQ(standard.packetFrameId(65'536), 0u);
+    EXPECT_EQ(standard.packetFrameId(65'537), 1u);
+
+    auto fusa_json = readFixture();
+    replaceAll(
+        fusa_json,
+        "RNG19_RFL8_SIG16_NIR16",
+        "FUSA_RNG15_RFL8_NIR8_DUAL");
+    const auto fusa = OusterMetadata::fromJson(std::move(fusa_json));
+    const auto maximum = std::numeric_limits<std::uint32_t>::max();
+    EXPECT_EQ(fusa.packetFrameId(65'536), 65'536u);
+    EXPECT_EQ(fusa.packetFrameId(maximum), maximum);
+    EXPECT_EQ(
+        fusa.packetFrameId(static_cast<std::uint64_t>(maximum) + 1u),
+        0u);
 }
 
 }  // namespace

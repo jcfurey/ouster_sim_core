@@ -7,7 +7,6 @@
 #include <ouster/types.h>
 
 #include <cstring>
-#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -59,18 +58,6 @@ void validateFrame(
     }
 }
 
-std::uint32_t frameId(
-    std::uint64_t revolution,
-    std::uint64_t maximum_frame_id)
-{
-    if (maximum_frame_id > std::numeric_limits<std::uint32_t>::max()) {
-        throw std::overflow_error(
-            "Ouster packet format frame ID exceeds PacketWriter uint32 API");
-    }
-    const std::uint64_t modulus = maximum_frame_id + 1;
-    return static_cast<std::uint32_t>(revolution % modulus);
-}
-
 }  // namespace
 
 OusterPacketEncoder::OusterPacketEncoder(OusterMetadata metadata)
@@ -89,7 +76,7 @@ std::vector<EncodedLidarPacket> OusterPacketEncoder::encode(
     const auto columns_per_packet = metadata_.columnsPerPacket();
     const auto packet_count = width / columns_per_packet;
     const std::uint32_t packet_frame_id =
-        frameId(frame.revolution, writer.max_frame_id);
+        metadata_.packetFrameId(frame.revolution);
 
     std::vector<EncodedLidarPacket> packets;
     packets.reserve(packet_count);

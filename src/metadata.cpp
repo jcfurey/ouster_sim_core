@@ -135,6 +135,11 @@ struct OusterMetadata::Impl {
             throw std::invalid_argument(
                 "Ouster metadata selects a lidar profile with no packets");
         }
+        if (packet_writer.max_frame_id >
+            std::numeric_limits<std::uint32_t>::max()) {
+            throw std::invalid_argument(
+                "Ouster packet frame ID cannot be represented in uint32");
+        }
         if (packet_writer.field_type(ouster::sdk::core::ChanField::RANGE) ==
             ouster::sdk::core::ChanFieldType::VOID) {
             throw std::invalid_argument(
@@ -268,6 +273,15 @@ std::uint64_t OusterMetadata::sensorSerial() const noexcept
 std::uint32_t OusterMetadata::initializationId() const noexcept
 {
     return impl_->sensor_info->init_id;
+}
+
+std::uint32_t OusterMetadata::packetFrameId(
+    std::uint64_t revolution) const noexcept
+{
+    const std::uint64_t modulus =
+        static_cast<std::uint64_t>(impl_->packet_writer.max_frame_id) +
+        std::uint64_t{1};
+    return static_cast<std::uint32_t>(revolution % modulus);
 }
 
 const std::string & OusterMetadata::activeLidarUdpProfile() const noexcept

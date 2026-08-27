@@ -52,6 +52,13 @@ public:
     std::uint64_t sensorSerial() const noexcept;
     std::uint32_t initializationId() const noexcept;
 
+    /// Packet-header frame identity for a monotonically increasing revolution.
+    ///
+    /// Standard and legacy packet layouts wrap at 16 bits; FUSA packet
+    /// layouts wrap at 32 bits. This semantic conversion keeps simulator
+    /// adapters from duplicating SDK-specific header-width rules.
+    std::uint32_t packetFrameId(std::uint64_t revolution) const noexcept;
+
     /// Active source UDP lidar profile as an SDK-neutral stable name.
     const std::string & activeLidarUdpProfile() const noexcept;
 
