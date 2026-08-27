@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <span>
 #include <vector>
@@ -123,6 +124,42 @@ TEST(OusterRevolutionAssembler, RejectsIdentityRepairInputsTransactionally)
     returns[0].identity.return_index = 1;
     EXPECT_THROW(assembler.ingest(returns), std::invalid_argument);
     EXPECT_EQ(assembler.expectedLinearIndex(), 0u);
+}
+
+TEST(OusterRevolutionAssembler, RejectsOverflowingResetTransactionally)
+{
+    const auto table = makeTable();
+    const auto returns = makeReturns(*table, 0, table->columnsPerFrame());
+    OusterRevolutionAssembler assembler(table, 1'000'000'000);
+
+    const auto split = static_cast<std::size_t>(table->channelCount() + 1u);
+    EXPECT_TRUE(assembler.ingest(
+        std::span<const OusterReturnSample>(returns).first(split)).empty());
+    ASSERT_EQ(assembler.expectedRevolution(), 0u);
+    ASSERT_EQ(assembler.expectedLinearIndex(), split);
+
+    EXPECT_THROW(
+        assembler.reset(std::numeric_limits<std::int64_t>::max(), 1),
+        std::overflow_error);
+    EXPECT_EQ(assembler.expectedRevolution(), 0u);
+    EXPECT_EQ(assembler.expectedLinearIndex(), split);
+
+    const auto final_column_offset =
+        table->at(table->columnsPerFrame() - 1u, 0).time_offset_ns;
+    EXPECT_THROW(
+        assembler.reset(
+            std::numeric_limits<std::int64_t>::max() -
+                final_column_offset + 1,
+            0),
+        std::overflow_error);
+    EXPECT_EQ(assembler.expectedRevolution(), 0u);
+    EXPECT_EQ(assembler.expectedLinearIndex(), split);
+
+    const auto completed = assembler.ingest(
+        std::span<const OusterReturnSample>(returns).subspan(split));
+    ASSERT_EQ(completed.size(), 1u);
+    EXPECT_EQ(completed.front().revolution, 0u);
+    EXPECT_EQ(completed.front().frame_start_timestamp_ns, 1'000'000'000);
 }
 
 }  // namespace

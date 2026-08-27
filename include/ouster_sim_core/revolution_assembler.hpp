@@ -53,6 +53,9 @@ public:
     std::vector<OusterScanFrame> ingest(
         std::span<const OusterReturnSample> samples);
 
+    /// Discard any partial frame and restart at an explicit time/identity.
+    /// The complete first-frame timestamp domain is validated before state is
+    /// changed; on failure the previous partial frame and identity remain.
     void reset(
         std::int64_t revolution_zero_timestamp_ns,
         std::uint64_t first_revolution = 0);

@@ -3,6 +3,7 @@
 
 #include "ouster_sim_core/revolution_assembler.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -191,11 +192,36 @@ void OusterRevolutionAssembler::reset(
         throw std::invalid_argument(
             "revolution zero timestamp must be non-negative");
     }
+
+    // Validate the complete first-frame timestamp domain before committing
+    // any state. In particular, a failed reset must not discard a partial
+    // pre-reset revolution or leave the new origin paired with the old
+    // expected identity.
+    const auto period = firing_table_->scanPeriodNs();
+    const auto maximum = std::numeric_limits<std::int64_t>::max();
+    if (first_revolution >
+        static_cast<std::uint64_t>(
+            (maximum - revolution_zero_timestamp_ns) / period)) {
+        throw std::overflow_error("revolution timestamp exceeds int64_t");
+    }
+    const std::int64_t first_frame_timestamp =
+        revolution_zero_timestamp_ns +
+        static_cast<std::int64_t>(first_revolution) * period;
+    std::int64_t maximum_offset = 0;
+    for (std::uint32_t measurement = 0;
+         measurement < firing_table_->columnsPerFrame(); ++measurement) {
+        maximum_offset = std::max(
+            maximum_offset,
+            firing_table_->at(measurement, 0).time_offset_ns);
+    }
+    if (first_frame_timestamp > maximum - maximum_offset) {
+        throw std::overflow_error("column timestamp exceeds int64_t");
+    }
+
     revolution_zero_timestamp_ns_ = revolution_zero_timestamp_ns;
     expected_revolution_ = first_revolution;
     expected_linear_index_ = 0;
     pending_frame_.reset();
-    static_cast<void>(frameStartTimestamp(first_revolution));
 }
 
 }  // namespace ouster_sim_core

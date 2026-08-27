@@ -5,7 +5,9 @@ Plain-CMake, simulator-neutral infrastructure for Ouster lidar simulation.
 The canonical repository is
 [github.com/jcfurey/ouster_sim_core](https://github.com/jcfurey/ouster_sim_core).
 Simulator repositories embed and pin it as a Git submodule; it is deliberately
-not a ROS package and contains no `package.xml`.
+not a ROS package and contains no `package.xml`. Its `COLCON_IGNORE` marker
+prevents a recursive ROS workspace scan from misclassifying the embedded
+plain-CMake project as an independently buildable colcon package.
 
 ## Responsibilities
 
