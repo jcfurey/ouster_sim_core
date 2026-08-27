@@ -4,11 +4,13 @@
 #pragma once
 
 #include "ouster_sim_core/firing_table.hpp"
+#include "ouster_sim_core/product_profile.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -19,6 +21,14 @@ class PacketWriter;
 namespace ouster_sim_core {
 
 class OusterPacketEncoder;
+
+/// SDK-neutral semantic firmware version parsed from source metadata.
+struct OusterFirmwareVersion {
+    std::uint16_t major = 0;
+    std::uint16_t minor = 0;
+    std::uint16_t patch = 0;
+    std::string version_string;
+};
 
 /// Validated Ouster metadata and its packet-layout contract.
 ///
@@ -42,7 +52,31 @@ public:
     std::uint64_t sensorSerial() const noexcept;
     std::uint32_t initializationId() const noexcept;
 
+    /// Active source UDP lidar profile as an SDK-neutral stable name.
+    const std::string & activeLidarUdpProfile() const noexcept;
+
+    /// Number of packet return slots selected by the active UDP profile.
+    std::uint8_t activeReturnCount() const noexcept;
+
+    /// Bit mask of millimetre values exactly representable by RANGE.
+    ///
+    /// The mask also expresses alignment. For example RNG15 profiles return
+    /// 0x3fff8: range values must be no greater than 262136 and divisible by
+    /// eight.
+    std::uint32_t encodableRangeMaskMm() const noexcept;
+    std::uint32_t maximumEncodableRangeMm() const noexcept;
+    bool isRangeEncodable(std::uint32_t range_mm) const noexcept;
+
+    /// Reject profiles whose packet contract requires secondary returns.
+    ///
+    /// The current shared channel and frame contract is intentionally
+    /// primary-return-only. Callers can inspect the profile and return count
+    /// before invoking this gate.
+    void requirePrimaryReturnProfile() const;
+
     const std::string & productLine() const noexcept;
+    const std::string & sourceProductPartNumber() const noexcept;
+    const OusterFirmwareVersion & sourceFirmwareVersion() const noexcept;
     const std::string & sourceJson() const noexcept;
     const std::string & publishedJson() const noexcept;
     bool firmwareAdvertisementAdjusted() const noexcept;
@@ -52,6 +86,20 @@ public:
     double beamOriginM() const noexcept;
 
     OusterFiringTableConfig firingTableConfig(double lidar_hz) const;
+
+    /// Build a physical-product request from the unmodified source metadata.
+    ///
+    /// A missing hardware override preserves automatic revision inference. A
+    /// missing low-data override derives the value from the source UDP packet
+    /// profile. Publication-only firmware adjustments never affect this
+    /// request.
+    OusterProductProfileRequest productProfileRequest(
+        std::optional<std::string> hardware_revision = std::nullopt,
+        std::optional<bool> low_data_profile = std::nullopt) const;
+
+    OusterProductProfile resolvedProductProfile(
+        std::optional<std::string> hardware_revision = std::nullopt,
+        std::optional<bool> low_data_profile = std::nullopt) const;
 
 private:
     struct Impl;

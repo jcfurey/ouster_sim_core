@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ouster_sim_core VERSION 0.1.0 LANGUAGES CXX)
+project(ouster_sim_core VERSION 0.2.0 LANGUAGES CXX)
 
 if(NOT DEFINED CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 20)
@@ -22,7 +22,10 @@ endif()
 add_library(ouster_sim_core STATIC
   src/firing_table.cpp
   src/metadata.cpp
+  src/optical_channel_model.cpp
   src/packet_encoder.cpp
+  src/packet_pacing.cpp
+  src/product_profile.cpp
   src/revolution_assembler.cpp)
 add_library(ouster_sim_core::ouster_sim_core ALIAS ouster_sim_core)
 
@@ -51,6 +54,38 @@ if(OUSTER_SIM_CORE_BUILD_TESTING)
     ouster_sim_core
     GTest::gtest_main)
   gtest_discover_tests(ouster_sim_core_test_revolution_assembler)
+
+  add_executable(ouster_sim_core_test_optical_channel_model
+    test/test_optical_channel_model.cpp)
+  target_link_libraries(ouster_sim_core_test_optical_channel_model PRIVATE
+    ouster_sim_core
+    GTest::gtest_main)
+  gtest_discover_tests(ouster_sim_core_test_optical_channel_model)
+
+  add_executable(ouster_sim_core_test_packet_pacing
+    test/test_packet_pacing.cpp)
+  target_link_libraries(ouster_sim_core_test_packet_pacing PRIVATE
+    ouster_sim_core
+    GTest::gtest_main)
+  gtest_discover_tests(ouster_sim_core_test_packet_pacing)
+
+  add_executable(ouster_sim_core_test_product_profile
+    test/test_product_profile.cpp)
+  target_link_libraries(ouster_sim_core_test_product_profile PRIVATE
+    ouster_sim_core
+    GTest::gtest_main)
+  gtest_discover_tests(ouster_sim_core_test_product_profile)
+
+  add_executable(ouster_sim_core_test_metadata_product_profile
+    test/test_metadata_product_profile.cpp)
+  target_compile_definitions(
+    ouster_sim_core_test_metadata_product_profile PRIVATE
+    OUSTER_SIM_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data")
+  target_link_libraries(
+    ouster_sim_core_test_metadata_product_profile PRIVATE
+    ouster_sim_core
+    GTest::gtest_main)
+  gtest_discover_tests(ouster_sim_core_test_metadata_product_profile)
 
   add_executable(ouster_sim_core_test_packet_roundtrip
     test/test_packet_roundtrip.cpp)

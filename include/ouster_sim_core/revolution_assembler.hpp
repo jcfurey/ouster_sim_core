@@ -4,6 +4,7 @@
 #pragma once
 
 #include "ouster_sim_core/firing_table.hpp"
+#include "ouster_sim_core/return_sample.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -13,17 +14,6 @@
 #include <vector>
 
 namespace ouster_sim_core {
-
-/// Simulator-normalized primary return. Channel values are already expressed
-/// in the integer domain written to the Ouster packet fields.
-struct OusterReturnSample {
-    OusterFiringIdentity identity;
-    double range_m = 0.0;
-    std::uint16_t signal = 0;
-    std::uint8_t reflectivity = 0;
-    std::uint16_t near_ir = 0;
-    bool is_hit = false;
-};
 
 /// One complete source-identified revolution in Ouster SDK image layout.
 ///

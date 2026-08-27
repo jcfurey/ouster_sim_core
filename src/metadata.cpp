@@ -23,6 +23,16 @@ namespace {
 constexpr std::uint32_t kMaximumColumns = 4096;
 constexpr std::uint16_t kMaximumChannels = 256;
 
+bool isLowDataProfile(ouster::sdk::core::UDPProfileLidar profile)
+{
+    using Profile = ouster::sdk::core::UDPProfileLidar;
+    return profile == Profile::RNG15_RFL8_NIR8 ||
+           profile == Profile::FUSA_RNG15_RFL8_NIR8_DUAL ||
+           profile == Profile::RNG15_RFL8_NIR8_DUAL ||
+           profile == Profile::RNG15_RFL8_NIR8_ZONE16 ||
+           profile == Profile::RNG15_RFL8_WIN8;
+}
+
 std::string readMetadataFile(
     const std::filesystem::path & path,
     std::uintmax_t maximum_file_bytes)
@@ -90,6 +100,22 @@ struct OusterMetadata::Impl {
         const auto width = sensor_info->format.columns_per_frame;
         const auto columns_per_packet = packet_writer.columns_per_packet;
 
+        // Preserve the physical-product inputs before mutating the SDK object
+        // for publication compatibility below. In particular, an advertised
+        // firmware floor must not silently upgrade simulated sensor physics.
+        source_product_line = sensor_info->prod_line;
+        source_product_part_number = sensor_info->prod_pn;
+        const auto source_version = sensor_info->get_version();
+        source_firmware_version.major = source_version.major;
+        source_firmware_version.minor = source_version.minor;
+        source_firmware_version.patch = source_version.patch;
+        source_firmware_version.version_string =
+            source_version.simple_version_string();
+        active_lidar_udp_profile = ouster::sdk::core::to_string(
+            sensor_info->format.udp_profile_lidar);
+        source_low_data_profile =
+            isLowDataProfile(sensor_info->format.udp_profile_lidar);
+
         if (height <= 0 || height > kMaximumChannels) {
             throw std::invalid_argument(
                 "Ouster metadata pixels_per_column must be between 1 and 256");
@@ -109,6 +135,25 @@ struct OusterMetadata::Impl {
             throw std::invalid_argument(
                 "Ouster metadata selects a lidar profile with no packets");
         }
+        if (packet_writer.field_type(ouster::sdk::core::ChanField::RANGE) ==
+            ouster::sdk::core::ChanFieldType::VOID) {
+            throw std::invalid_argument(
+                "Ouster lidar packet profile does not contain RANGE");
+        }
+
+        active_return_count =
+            packet_writer.field_type(ouster::sdk::core::ChanField::RANGE2) ==
+                    ouster::sdk::core::ChanFieldType::VOID
+                ? 1u
+                : 2u;
+        const std::uint64_t range_mask = packet_writer.field_value_mask(
+            ouster::sdk::core::ChanField::RANGE);
+        if (range_mask == 0 ||
+            range_mask > std::numeric_limits<std::uint32_t>::max()) {
+            throw std::invalid_argument(
+                "Ouster lidar RANGE mask cannot be represented in uint32");
+        }
+        encodable_range_mask_mm = static_cast<std::uint32_t>(range_mask);
 
         beam_altitude_deg = sensor_info->beam_altitude_angles;
         beam_azimuth_deg = sensor_info->beam_azimuth_angles;
@@ -159,12 +204,19 @@ struct OusterMetadata::Impl {
 
     std::string source_json;
     std::string published_json;
+    std::string source_product_line;
+    std::string source_product_part_number;
+    std::string active_lidar_udp_profile;
+    OusterFirmwareVersion source_firmware_version;
     std::shared_ptr<ouster::sdk::core::SensorInfo> sensor_info;
     ouster::sdk::core::PacketFormat packet_format;
     ouster::sdk::core::impl::PacketWriter packet_writer;
     std::vector<double> beam_altitude_deg;
     std::vector<double> beam_azimuth_deg;
     double beam_origin_m = 0.0;
+    std::uint32_t encodable_range_mask_mm = 0;
+    std::uint8_t active_return_count = 0;
+    bool source_low_data_profile = false;
     bool firmware_adjusted = false;
 };
 
@@ -218,9 +270,55 @@ std::uint32_t OusterMetadata::initializationId() const noexcept
     return impl_->sensor_info->init_id;
 }
 
+const std::string & OusterMetadata::activeLidarUdpProfile() const noexcept
+{
+    return impl_->active_lidar_udp_profile;
+}
+
+std::uint8_t OusterMetadata::activeReturnCount() const noexcept
+{
+    return impl_->active_return_count;
+}
+
+std::uint32_t OusterMetadata::encodableRangeMaskMm() const noexcept
+{
+    return impl_->encodable_range_mask_mm;
+}
+
+std::uint32_t OusterMetadata::maximumEncodableRangeMm() const noexcept
+{
+    return impl_->encodable_range_mask_mm;
+}
+
+bool OusterMetadata::isRangeEncodable(std::uint32_t range_mm) const noexcept
+{
+    return (range_mm & ~impl_->encodable_range_mask_mm) == 0;
+}
+
+void OusterMetadata::requirePrimaryReturnProfile() const
+{
+    if (activeReturnCount() != 1u) {
+        throw std::invalid_argument(
+            "Ouster UDP lidar profile '" + activeLidarUdpProfile() +
+            "' carries " + std::to_string(activeReturnCount()) +
+            " returns; the current simulation contract supports exactly one");
+    }
+}
+
 const std::string & OusterMetadata::productLine() const noexcept
 {
-    return impl_->sensor_info->prod_line;
+    return impl_->source_product_line;
+}
+
+const std::string & OusterMetadata::sourceProductPartNumber() const noexcept
+{
+    return impl_->source_product_part_number;
+}
+
+const OusterFirmwareVersion &
+OusterMetadata::sourceFirmwareVersion() const noexcept
+{
+    return impl_->source_firmware_version;
 }
 
 const std::string & OusterMetadata::sourceJson() const noexcept
@@ -263,6 +361,30 @@ OusterFiringTableConfig OusterMetadata::firingTableConfig(
     config.beam_azimuth_deg = beamAzimuthDeg();
     config.lidar_origin_to_beam_origin_m = beamOriginM();
     return config;
+}
+
+OusterProductProfileRequest OusterMetadata::productProfileRequest(
+    std::optional<std::string> hardware_revision,
+    std::optional<bool> low_data_profile) const
+{
+    OusterProductProfileRequest request;
+    request.product_line = productLine();
+    request.product_part_number = sourceProductPartNumber();
+    request.hardware_revision = hardware_revision.value_or(std::string{"auto"});
+    request.firmware_major = sourceFirmwareVersion().major;
+    request.firmware_minor = sourceFirmwareVersion().minor;
+    request.beam_count = pixelsPerColumn();
+    request.low_data_profile =
+        low_data_profile.value_or(impl_->source_low_data_profile);
+    return request;
+}
+
+OusterProductProfile OusterMetadata::resolvedProductProfile(
+    std::optional<std::string> hardware_revision,
+    std::optional<bool> low_data_profile) const
+{
+    return resolveOusterProductProfile(
+        productProfileRequest(std::move(hardware_revision), low_data_profile));
 }
 
 const ouster::sdk::core::impl::PacketWriter &

@@ -48,6 +48,15 @@ void validateFrame(
                 "Ouster column timestamps must increase strictly");
         }
     }
+    for (const std::uint32_t range_mm : frame.range_mm) {
+        if (!metadata.isRangeEncodable(range_mm)) {
+            throw std::invalid_argument(
+                "scan frame RANGE value " + std::to_string(range_mm) +
+                " mm is not exactly encodable by Ouster UDP lidar profile '" +
+                metadata.activeLidarUdpProfile() + "' (value mask " +
+                std::to_string(metadata.encodableRangeMaskMm()) + ")");
+        }
+    }
 }
 
 std::uint32_t frameId(
@@ -67,6 +76,7 @@ std::uint32_t frameId(
 OusterPacketEncoder::OusterPacketEncoder(OusterMetadata metadata)
     : metadata_(std::move(metadata))
 {
+    metadata_.requirePrimaryReturnProfile();
 }
 
 std::vector<EncodedLidarPacket> OusterPacketEncoder::encode(

@@ -3,7 +3,6 @@
 
 #include "ouster_sim_core/revolution_assembler.hpp"
 
-#include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -11,22 +10,6 @@
 
 namespace ouster_sim_core {
 namespace {
-
-std::uint32_t rangeMillimeters(double range_m)
-{
-    if (!std::isfinite(range_m) || range_m <= 0.0) {
-        throw std::invalid_argument(
-            "hit range_m must be finite and greater than zero");
-    }
-    const long double millimeters =
-        static_cast<long double>(range_m) * 1000.0L;
-    if (millimeters >
-        static_cast<long double>(std::numeric_limits<std::uint32_t>::max()) +
-            0.499L) {
-        throw std::overflow_error("hit range exceeds the uint32 packet domain");
-    }
-    return static_cast<std::uint32_t>(std::llround(millimeters));
-}
 
 std::string identityDescription(const OusterFiringIdentity & identity)
 {
@@ -152,10 +135,13 @@ std::vector<OusterScanFrame> OusterRevolutionAssembler::ingest(
                 " linear_index=" + std::to_string(validation_linear));
         }
 
-        if (sample.is_hit) {
-            static_cast<void>(rangeMillimeters(sample.range_m));
-        } else if (sample.range_m != 0.0 || sample.signal != 0 ||
-                   sample.reflectivity != 0 || sample.near_ir != 0) {
+        if (sample.is_hit && sample.range_mm == 0) {
+            throw std::invalid_argument(
+                "a source hit must have nonzero integer range_mm");
+        }
+        if (!sample.is_hit &&
+            (sample.range_mm != 0 || sample.signal != 0 ||
+             sample.reflectivity != 0 || sample.near_ir != 0)) {
             throw std::invalid_argument(
                 "a source miss must retain zero range and zero channels");
         }
@@ -180,7 +166,7 @@ std::vector<OusterScanFrame> OusterRevolutionAssembler::ingest(
         const std::size_t index = pending_frame_->sdkImageIndex(
             sample.identity.measurement_id, sample.identity.ring_id);
         if (sample.is_hit) {
-            pending_frame_->range_mm[index] = rangeMillimeters(sample.range_m);
+            pending_frame_->range_mm[index] = sample.range_mm;
             pending_frame_->signal[index] = sample.signal;
             pending_frame_->reflectivity[index] = sample.reflectivity;
             pending_frame_->near_ir[index] = sample.near_ir;

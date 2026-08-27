@@ -43,8 +43,7 @@ std::vector<OusterReturnSample> makeReturns(
         sample.identity = table.identity(batch, offset);
         sample.is_hit = (sample.identity.linear_index % 3u) != 0u;
         if (sample.is_hit) {
-            sample.range_m =
-                1.0 + static_cast<double>(sample.identity.linear_index) * 0.001;
+            sample.range_mm = 1'000u + sample.identity.linear_index;
             sample.signal = static_cast<std::uint16_t>(100 + offset);
             sample.reflectivity = static_cast<std::uint8_t>(10 + offset);
             sample.near_ir = static_cast<std::uint16_t>(200 + offset);
@@ -116,7 +115,7 @@ TEST(OusterRevolutionAssembler, RejectsIdentityRepairInputsTransactionally)
     EXPECT_EQ(assembler.expectedLinearIndex(), 0u);
 
     returns = makeReturns(*table, 0, table->columnsPerFrame());
-    returns[0].range_m = 1.0;
+    returns[0].range_mm = 1'000u;
     EXPECT_THROW(assembler.ingest(returns), std::invalid_argument);
     EXPECT_EQ(assembler.expectedLinearIndex(), 0u);
 

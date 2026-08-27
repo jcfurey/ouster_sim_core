@@ -13,6 +13,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <vector>
@@ -28,12 +30,49 @@ using ouster_sim_core::OusterMetadata;
 using ouster_sim_core::OusterPacketEncoder;
 using ouster_sim_core::OusterReturnSample;
 using ouster_sim_core::OusterRevolutionAssembler;
+using ouster_sim_core::OusterScanFrame;
 using ouster_sim_core::ScheduledColumnBatch;
 
 std::string metadataPath()
 {
     return std::string(OUSTER_SIM_CORE_TEST_DATA_DIR) +
         "/os1_64_rev7.json";
+}
+
+std::string metadataJsonWithProfile(const std::string & profile)
+{
+    std::ifstream stream(metadataPath(), std::ios::binary);
+    std::string json{std::istreambuf_iterator<char>(stream),
+                     std::istreambuf_iterator<char>()};
+    const std::string source_profile = "RNG19_RFL8_SIG16_NIR16";
+    std::size_t position = 0;
+    while ((position = json.find(source_profile, position)) !=
+           std::string::npos) {
+        json.replace(position, source_profile.size(), profile);
+        position += profile.size();
+    }
+    return json;
+}
+
+OusterScanFrame blankFrame(const OusterMetadata & metadata)
+{
+    OusterScanFrame frame;
+    frame.revolution = 1;
+    frame.frame_start_timestamp_ns = 1'000'000'000;
+    frame.columns_per_frame = metadata.columnsPerFrame();
+    frame.pixels_per_column = metadata.pixelsPerColumn();
+    frame.column_timestamp_ns.resize(frame.columns_per_frame);
+    for (std::uint32_t measurement = 0;
+         measurement < frame.columns_per_frame; ++measurement) {
+        frame.column_timestamp_ns[measurement] =
+            static_cast<std::uint64_t>(frame.frame_start_timestamp_ns) +
+            measurement + 1u;
+    }
+    frame.range_mm.assign(frame.sampleCount(), 0u);
+    frame.signal.assign(frame.sampleCount(), 0u);
+    frame.reflectivity.assign(frame.sampleCount(), 0u);
+    frame.near_ir.assign(frame.sampleCount(), 0u);
+    return frame;
 }
 
 std::vector<OusterReturnSample> deterministicReturns(
@@ -52,7 +91,7 @@ std::vector<OusterReturnSample> deterministicReturns(
         if (sample.is_hit) {
             const auto millimeters = static_cast<std::uint32_t>(
                 1'000u + (offset % 60'000u));
-            sample.range_m = static_cast<double>(millimeters) * 0.001;
+            sample.range_mm = millimeters;
             sample.signal = static_cast<std::uint16_t>(
                 (offset * 37u) & 0xffffu);
             sample.reflectivity = static_cast<std::uint8_t>(
@@ -188,6 +227,42 @@ TEST(OusterPacketEncoder, FullRevolutionRoundTripsThroughOusterSdk)
             EXPECT_EQ(decoded_near_ir(ring, measurement), frame.near_ir[index]);
         }
     }
+}
+
+TEST(OusterPacketEncoder, LowDataRangeBoundaryRoundTripsWithoutMasking)
+{
+    const auto metadata = OusterMetadata::fromJson(
+        metadataJsonWithProfile("RNG15_RFL8_NIR8"));
+    ASSERT_EQ(metadata.maximumEncodableRangeMm(), 262136u);
+    OusterPacketEncoder encoder(metadata);
+    auto frame = blankFrame(metadata);
+    frame.range_mm[frame.sdkImageIndex(0, 0)] = 262136u;
+
+    const auto packets = encoder.encode(frame);
+    ASSERT_FALSE(packets.empty());
+
+    ouster::sdk::core::SensorInfo sensor_info(metadata.publishedJson());
+    ouster::sdk::core::PacketFormat packet_format(sensor_info);
+    const auto * first_column = packet_format.nth_col(
+        0, packets.front().bytes.data());
+    std::vector<std::uint32_t> decoded(metadata.pixelsPerColumn());
+    packet_format.col_field<std::uint32_t>(
+        first_column, ouster::sdk::core::ChanField::RANGE, decoded.data());
+    EXPECT_EQ(decoded.front(), 262136u);
+
+    frame.range_mm[frame.sdkImageIndex(0, 0)] = 262144u;
+    EXPECT_THROW(encoder.encode(frame), std::invalid_argument);
+
+    frame.range_mm[frame.sdkImageIndex(0, 0)] = 262135u;
+    EXPECT_THROW(encoder.encode(frame), std::invalid_argument);
+}
+
+TEST(OusterPacketEncoder, RejectsDualReturnProfileBeforeEncoding)
+{
+    const auto metadata = OusterMetadata::fromJson(
+        metadataJsonWithProfile("RNG19_RFL8_SIG16_NIR16_DUAL"));
+    ASSERT_EQ(metadata.activeReturnCount(), 2u);
+    EXPECT_THROW(OusterPacketEncoder{metadata}, std::invalid_argument);
 }
 
 }  // namespace
