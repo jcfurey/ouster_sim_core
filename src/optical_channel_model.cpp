@@ -24,6 +24,7 @@ constexpr double kDropoutReflectanceFloor = 0.33;
 constexpr double kDropoutReflectanceScaleMaximum = 3.0;
 constexpr double kRangeNoiseReflectanceFloor = 0.25;
 constexpr double kRangeNoiseReflectanceScaleMaximum = 2.0;
+constexpr double kGazeboValidDepthMinimumM = 0.001;
 constexpr double kLn9 = 2.1972245773362196;
 constexpr double kTwoPi = 6.283185307179586476925286766559;
 constexpr double kHalfPi = 1.5707963267948966192313216916398;
@@ -138,6 +139,12 @@ void validateConfig(const OpticalChannelModelConfig & config)
     requireProbability(config.dropout_rate_close, "dropout_rate_close");
     requireProbability(config.dropout_rate_far, "dropout_rate_far");
     requireProbability(config.false_alarm_rate, "false_alarm_rate");
+    requireFiniteNonnegative(
+        config.edge_discontinuity_threshold_m,
+        "edge_discontinuity_threshold_m");
+    requireProbability(
+        config.edge_suppression_probability,
+        "edge_suppression_probability");
     validateDetectionPair(
         config.detection.range_10_d90_m,
         config.detection.range_80_d90_m,
@@ -355,6 +362,69 @@ bool detectionEnabled(const OpticalDetectionParameters & parameters) noexcept
            parameters.range_80_d90_m > parameters.range_10_d90_m;
 }
 
+bool edgeSuppressionEnabled(
+    const OpticalChannelModelConfig & config) noexcept
+{
+    return config.edge_discontinuity_threshold_m > 0.0 &&
+           config.edge_suppression_probability > 0.0;
+}
+
+std::string opticalIdentityDescription(
+    const OusterFiringIdentity & identity)
+{
+    return "revolution=" + std::to_string(identity.revolution) +
+           " measurement_id=" + std::to_string(identity.measurement_id) +
+           " ring_id=" + std::to_string(identity.ring_id) +
+           " linear_index=" + std::to_string(identity.linear_index);
+}
+
+bool hasGazeboReferenceEdge(
+    const std::vector<const NormalizedOpticalReturn *> & canonical,
+    const NormalizedOpticalReturn & input,
+    const OusterFiringTable & firing_table,
+    double threshold_m) noexcept
+{
+    const auto measurement = input.identity.measurement_id;
+    const auto ring = input.identity.ring_id;
+    const auto width = firing_table.columnsPerFrame();
+    const auto height = firing_table.channelCount();
+    const double range_m = input.reported_range_m;
+
+    const auto discontinuous = [&](std::uint32_t neighbor_measurement,
+                                   std::uint16_t neighbor_ring) {
+        const std::size_t index =
+            static_cast<std::size_t>(neighbor_measurement) * height +
+            neighbor_ring;
+        const auto & neighbor = *canonical[index];
+        return !neighbor.hasReturn() ||
+               neighbor.reported_range_m < kGazeboValidDepthMinimumM ||
+               std::fabs(neighbor.reported_range_m - range_m) > threshold_m;
+    };
+
+    // This is intentionally the non-wrapping cardinal topology in
+    // gz_sensors_ouster::rpmath::edgeDiscontinuity(). The first and last
+    // measurement columns are temporally separated by almost one revolution,
+    // so treating them as same-frame neighbors is especially undesirable for
+    // a rolling-shutter sensor.
+    if (ring > 0 && discontinuous(
+            measurement, static_cast<std::uint16_t>(ring - 1u))) {
+        return true;
+    }
+    if (static_cast<std::size_t>(ring) + 1u < height &&
+        discontinuous(
+            measurement, static_cast<std::uint16_t>(ring + 1u))) {
+        return true;
+    }
+    if (measurement > 0 && discontinuous(measurement - 1u, ring)) {
+        return true;
+    }
+    if (measurement + 1u < width &&
+        discontinuous(measurement + 1u, ring)) {
+        return true;
+    }
+    return false;
+}
+
 }  // namespace
 
 OusterReturnSample QuantizedOpticalReturn::assemblerSample() const noexcept
@@ -532,6 +602,17 @@ QuantizedOpticalReturn OpticalChannelModel::process(
     const NormalizedOpticalReturn & input,
     const OpticalChannelContext & context) const
 {
+    if (edgeSuppressionEnabled(config_)) {
+        throw std::logic_error(
+            "enabled edge suppression requires processRevolution()");
+    }
+    return processScalar(input, context);
+}
+
+QuantizedOpticalReturn OpticalChannelModel::processScalar(
+    const NormalizedOpticalReturn & input,
+    const OpticalChannelContext & context) const
+{
     validateInput(input);
 
     if (!input.hasReturn()) {
@@ -667,6 +748,89 @@ std::vector<QuantizedOpticalReturn> OpticalChannelModel::process(
     outputs.reserve(inputs.size());
     for (const auto & input : inputs) {
         outputs.push_back(process(input, context));
+    }
+    return outputs;
+}
+
+std::vector<QuantizedOpticalReturn> OpticalChannelModel::processRevolution(
+    std::span<const NormalizedOpticalReturn> inputs,
+    const OusterFiringTable & firing_table,
+    const OpticalChannelContext & context) const
+{
+    const std::size_t expected_count = firing_table.sampleCount();
+    if (inputs.size() != expected_count) {
+        throw std::invalid_argument(
+            "an optical revolution requires exactly " +
+            std::to_string(expected_count) + " returns; received " +
+            std::to_string(inputs.size()));
+    }
+
+    std::vector<const NormalizedOpticalReturn *> canonical(
+        expected_count, nullptr);
+    std::optional<std::uint64_t> revolution;
+    const auto height = firing_table.channelCount();
+    for (const auto & input : inputs) {
+        validateInput(input);
+        const auto & identity = input.identity;
+        if (identity.measurement_id >= firing_table.columnsPerFrame() ||
+            identity.ring_id >= height) {
+            throw std::invalid_argument(
+                "optical firing identity is outside the revolution layout: " +
+                opticalIdentityDescription(identity));
+        }
+
+        const auto & firing = firing_table.at(
+            identity.measurement_id, identity.ring_id);
+        if (identity.linear_index != firing.linear_index ||
+            identity.time_offset_ns != firing.time_offset_ns) {
+            throw std::invalid_argument(
+                "optical firing identity differs from the firing table: " +
+                opticalIdentityDescription(identity));
+        }
+        if (!revolution) {
+            revolution = identity.revolution;
+        } else if (identity.revolution != *revolution) {
+            throw std::invalid_argument(
+                "an optical revolution cannot mix revolution identities");
+        }
+
+        const std::size_t index = firing.linear_index;
+        if (canonical[index] != nullptr) {
+            throw std::invalid_argument(
+                "duplicate optical firing identity: " +
+                opticalIdentityDescription(identity));
+        }
+        canonical[index] = &input;
+    }
+
+    std::vector<QuantizedOpticalReturn> outputs;
+    outputs.reserve(expected_count);
+    for (const auto * input : canonical) {
+        // Exact cardinal coverage plus the size/duplicate checks above imply
+        // this cannot be null, but retain an explicit contract failure instead
+        // of dereferencing if the indexing contract changes later.
+        if (input == nullptr) {
+            throw std::invalid_argument(
+                "optical revolution is missing a firing identity");
+        }
+
+        const bool range_is_reportable = input->hasReturn() &&
+            input->reported_range_m >= config_.minimum_range_m &&
+            input->reported_range_m < config_.maximum_range_m;
+        if (range_is_reportable && edgeSuppressionEnabled(config_) &&
+            hasGazeboReferenceEdge(
+                canonical, *input, firing_table,
+                config_.edge_discontinuity_threshold_m) &&
+            deterministicOpticalUniform01(
+                context.seed,
+                randomKey(
+                    *input, context,
+                    OpticalRandomEffect::kEdgeSuppression)) <
+                config_.edge_suppression_probability) {
+            outputs.push_back(missFrom(*input));
+        } else {
+            outputs.push_back(processScalar(*input, context));
+        }
     }
     return outputs;
 }

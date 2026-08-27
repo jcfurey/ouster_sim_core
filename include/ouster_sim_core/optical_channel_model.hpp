@@ -14,9 +14,17 @@
 namespace ouster_sim_core {
 
 /// Version of the normalized optical contract and its deterministic random
-/// mapping. Increment this value whenever a change intentionally invalidates
-/// the frozen random or synthesized-channel golden vectors.
-inline constexpr std::uint32_t kOpticalChannelContractVersion = 1;
+/// mapping. Increment this value whenever a change adds to or intentionally
+/// invalidates the frozen random or synthesized-channel golden vectors.
+inline constexpr std::uint32_t kOpticalChannelContractVersion = 2;
+
+/// Standalone Gazebo Ouster edge policy adopted by the shared reference.
+///
+/// The threshold remains configurable (zero disables the stage), while the
+/// default probability is exposed so cross-simulator fixtures can name the
+/// exact policy they exercise.
+inline constexpr double kReferenceEdgeDiscontinuityThresholdM = 0.15;
+inline constexpr double kReferenceEdgeSuppressionProbability = 0.5;
 
 /// Origin of a simulator-normalized candidate return.
 ///
@@ -93,6 +101,7 @@ struct OpticalChannelContext {
 enum class OpticalRandomEffect : std::uint32_t {
     kFalseAlarmDecision = 1,
     kFalseAlarmRange = 2,
+    kEdgeSuppression = 3,
     kDropout = 4,
     kRangeNoise = 5,
     kSignalNoise = 6,
@@ -182,6 +191,13 @@ struct OpticalChannelModelConfig {
     double dropout_rate_far = 0.0;
     double false_alarm_rate = 0.0;
 
+    /// Raw-frame depth edge policy. A positive threshold enables the
+    /// complete-revolution stage; scalar processing then rejects the call so
+    /// an embedding cannot silently omit neighborhood effects.
+    double edge_discontinuity_threshold_m = 0.0;
+    double edge_suppression_probability =
+        kReferenceEdgeSuppressionProbability;
+
     OpticalDetectionParameters detection;
 };
 
@@ -201,10 +217,9 @@ OpticalChannelModelConfig opticalChannelModelConfigFromProfile(
 /// range quantization, and shot-noise approximations. Randomness is replaced
 /// by a counter-keyed generator so output is invariant to call order and batch
 /// segmentation. The object is immutable after validated construction and is
-/// safe to invoke concurrently. Spatial edge suppression is deliberately not
-/// represented by a caller-provided scalar flag: a later frame API must derive
-/// it from a canonical raw-frame neighborhood so adapters cannot make divergent
-/// parity decisions.
+/// safe to invoke concurrently. Spatial edge suppression is derived only by
+/// `processRevolution()` from a canonical raw-frame neighborhood; adapters
+/// cannot inject their own edge flags.
 class OpticalChannelModel {
 public:
     explicit OpticalChannelModel(OpticalChannelModelConfig config);
@@ -213,6 +228,11 @@ public:
         return config_;
     }
 
+    /// Process one return when frame-dependent effects are disabled.
+    ///
+    /// Calling either scalar overload with enabled edge suppression is a
+    /// logic error; use `processRevolution()` so the complete neighborhood is
+    /// authoritative.
     QuantizedOpticalReturn process(
         const NormalizedOpticalReturn & input,
         const OpticalChannelContext & context) const;
@@ -221,7 +241,27 @@ public:
         std::span<const NormalizedOpticalReturn> inputs,
         const OpticalChannelContext & context) const;
 
+    /// Validate and synthesize exactly one complete primary-return revolution.
+    ///
+    /// Inputs may arrive in any order. They must contain each firing identity
+    /// from one revolution exactly once and must retain the firing table's
+    /// canonical linear index and time offset. Outputs are always returned in
+    /// measurement-major source order, ready for OusterRevolutionAssembler.
+    ///
+    /// Edge detection follows the standalone Gazebo reference: compare the
+    /// raw reported range against existing cardinal neighbors, do not wrap the
+    /// azimuth seam, treat a neighboring miss as a discontinuity, and apply
+    /// the edge gate before dropout and channel noise.
+    std::vector<QuantizedOpticalReturn> processRevolution(
+        std::span<const NormalizedOpticalReturn> inputs,
+        const OusterFiringTable & firing_table,
+        const OpticalChannelContext & context) const;
+
 private:
+    QuantizedOpticalReturn processScalar(
+        const NormalizedOpticalReturn & input,
+        const OpticalChannelContext & context) const;
+
     OpticalChannelModelConfig config_;
 };
 

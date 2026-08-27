@@ -22,6 +22,8 @@ The core currently owns:
   reported Ouster range;
 - deterministic scalar detection, range-noise, signal, reflectivity, near-IR,
   dropout, and false-alarm behavior;
+- complete raw-revolution validation, identity canonicalization, and
+  neighborhood-derived depth-edge suppression;
 - stateless random draws keyed by sensor, epoch, firing identity, and effect;
 - strict, transactional assembly of source returns across arbitrary batch
   segmentation;
@@ -116,9 +118,22 @@ The integer mixer and open-interval uniform mapping are bit-exact contract
 surfaces. Gaussian and noisy-channel goldens are frozen for the supported
 toolchain; different `libm` implementations are compared with documented
 numeric tolerances. Optional incident angle is retained for later calibration
-without applying incidence twice. Spatial edge suppression is intentionally
-deferred until a complete-frame API can derive canonical neighborhoods inside
-the core.
+without applying incidence twice.
+
+`OpticalChannelModel::processRevolution()` is the authoritative spatial stage.
+It accepts one complete revolution in arbitrary order, rejects missing,
+duplicate, mixed-revolution, or firing-table-inconsistent identities, and
+returns canonical measurement-major output. Its edge topology intentionally
+matches standalone `gz_sensors_ouster`: existing cardinal neighbors only,
+no first/last-column wrap, a neighboring miss or raw reported-range jump above
+the configured threshold marks an edge, and the 50% edge gate precedes normal
+dropout and channel noise. The shared contract uses the firing-keyed
+`kEdgeSuppression` random lane instead of Gazebo's mutable backend generator,
+which makes output independent of worker completion and input ordering. Scalar
+processing rejects calls when edge suppression is enabled so an embedding
+cannot silently bypass the required frame context. The generic product-profile
+factory leaves the simulator policy disabled; AGX currently selects the
+Gazebo-reference 0.15 m threshold explicitly.
 
 Metadata exposes the active UDP lidar profile, return count, and exact RANGE
 value mask without exposing SDK types. The current encoder rejects dual-return

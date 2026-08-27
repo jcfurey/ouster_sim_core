@@ -11,9 +11,11 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <set>
 #include <span>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -27,6 +29,9 @@ using ouster_sim_core::OpticalRandomEffect;
 using ouster_sim_core::OpticalRandomKey;
 using ouster_sim_core::OpticalReturnKind;
 using ouster_sim_core::QuantizedOpticalReturn;
+using ouster_sim_core::OusterFiringTable;
+using ouster_sim_core::OusterFiringTableConfig;
+using ouster_sim_core::ScheduledColumnBatch;
 
 NormalizedOpticalReturn surface(
     std::uint32_t measurement_id,
@@ -44,6 +49,47 @@ NormalizedOpticalReturn surface(
     input.path_length_m = range_m;
     input.reported_range_m = range_m;
     return input;
+}
+
+std::shared_ptr<const OusterFiringTable> makeFrameTable(
+    std::uint32_t columns = 4,
+    std::size_t rings = 3)
+{
+    OusterFiringTableConfig config;
+    config.columns_per_frame = columns;
+    config.lidar_hz = 10.0;
+    config.beam_altitude_deg.resize(rings);
+    config.beam_azimuth_deg.resize(rings);
+    for (std::size_t ring = 0; ring < rings; ++ring) {
+        config.beam_altitude_deg[ring] =
+            static_cast<double>(rings - ring);
+        config.beam_azimuth_deg[ring] =
+            static_cast<double>(ring) * 0.1;
+    }
+    return std::make_shared<const OusterFiringTable>(std::move(config));
+}
+
+std::vector<NormalizedOpticalReturn> makeFrame(
+    const OusterFiringTable & table,
+    std::uint64_t revolution,
+    double range_m = 20.0)
+{
+    const ScheduledColumnBatch batch{
+        revolution * table.columnsPerFrame(),
+        table.columnsPerFrame()};
+    std::vector<NormalizedOpticalReturn> inputs;
+    inputs.reserve(table.sampleCount());
+    for (std::size_t offset = 0; offset < table.sampleCount(); ++offset) {
+        NormalizedOpticalReturn input;
+        input.identity = table.identity(batch, offset);
+        input.return_kind = OpticalReturnKind::kSurface;
+        input.geometric_hit = true;
+        input.path_length_m = range_m;
+        input.reported_range_m = range_m;
+        input.apparent_reflectance = 0.5;
+        inputs.push_back(input);
+    }
+    return inputs;
 }
 
 void expectSameChannels(
@@ -352,11 +398,15 @@ TEST(OpticalChannelModel, ProductProfileFactoryAppliesActiveModeScaling)
         0.030 / std::sqrt(2.0),
         1.0e-15);
     EXPECT_DOUBLE_EQ(config.false_alarm_rate, 1.0e-4);
+    EXPECT_DOUBLE_EQ(config.edge_discontinuity_threshold_m, 0.0);
+    EXPECT_DOUBLE_EQ(
+        config.edge_suppression_probability,
+        ouster_sim_core::kReferenceEdgeSuppressionProbability);
 }
 
 TEST(OpticalChannelModel, CounterRngHasStableGoldenWordAndIndependentLanes)
 {
-    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 1);
+    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 2);
     OpticalRandomKey key;
     key.sensor_stream_id = 0x1020304050607080ULL;
     key.epoch = 3;
@@ -452,9 +502,167 @@ TEST(OpticalChannelModel, NoiseIsInvariantToInputOrderAndBatchPartition)
     expectSameChannels(forward_output[1], separately_second);
 }
 
+TEST(OpticalChannelModel, CompleteRevolutionUsesGazeboCardinalTopology)
+{
+    const auto table = makeFrameTable();
+    auto inputs = makeFrame(*table, 7);
+
+    // This is the standalone Gazebo edge fixture expressed in source order:
+    // one 10 m center return surrounded by 20 m cardinal neighbors. With a
+    // certain edge gate, exactly the center and those four neighbors drop.
+    inputs[4].path_length_m = 10.0;
+    inputs[4].reported_range_m = 10.0;
+
+    OpticalChannelModelConfig config;
+    config.edge_discontinuity_threshold_m = 5.0;
+    config.edge_suppression_probability = 1.0;
+    const OpticalChannelModel model(config);
+    const auto output = model.processRevolution(inputs, *table, {});
+    ASSERT_EQ(output.size(), table->sampleCount());
+
+    const std::set<std::size_t> expected_suppressed{1u, 3u, 4u, 5u, 7u};
+    for (std::size_t index = 0; index < output.size(); ++index) {
+        EXPECT_EQ(
+            output[index].hasReturn(),
+            expected_suppressed.count(index) == 0u)
+            << "linear_index=" << index;
+        EXPECT_EQ(output[index].identity.linear_index, index);
+    }
+
+    // The complete-frame API canonicalizes identity, so simulator worker
+    // completion order cannot change either topology or output order.
+    std::reverse(inputs.begin(), inputs.end());
+    const auto shuffled = model.processRevolution(inputs, *table, {});
+    ASSERT_EQ(shuffled.size(), output.size());
+    for (std::size_t index = 0; index < output.size(); ++index) {
+        expectSameChannels(shuffled[index], output[index]);
+    }
+}
+
+TEST(OpticalChannelModel, VersionedEdgeSuppressionGoldenVector)
+{
+    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 2);
+    const auto table = makeFrameTable();
+    auto inputs = makeFrame(*table, 7);
+    inputs[4].path_length_m = 10.0;
+    inputs[4].reported_range_m = 10.0;
+
+    OpticalChannelModelConfig config;
+    config.edge_discontinuity_threshold_m = 5.0;
+    const OpticalChannelModel model(config);
+    const OpticalChannelContext context{12345, 77, 4};
+    const auto output = model.processRevolution(inputs, *table, context);
+
+    // Five pixels have the same edge mask as the Gazebo 3x3 center fixture.
+    // The shared contract replaces Gazebo's mutable mt19937 lane with firing-
+    // keyed draws. At P=0.5 this exact context suppresses indices 3, 5, and 7.
+    const std::set<std::size_t> expected_suppressed{3u, 5u, 7u};
+    for (std::size_t index = 0; index < output.size(); ++index) {
+        EXPECT_EQ(
+            output[index].hasReturn(),
+            expected_suppressed.count(index) == 0u)
+            << "linear_index=" << index;
+    }
+
+    OpticalRandomKey edge_key;
+    edge_key.sensor_stream_id = context.sensor_stream_id;
+    edge_key.epoch = context.epoch;
+    edge_key.revolution = 7;
+    edge_key.measurement_id = 1;
+    edge_key.ring_id = 0;
+    edge_key.effect = OpticalRandomEffect::kEdgeSuppression;
+    EXPECT_EQ(
+        ouster_sim_core::deterministicOpticalRandomBits(
+            context.seed, edge_key),
+        0x7c65c80da97673caULL);
+}
+
+TEST(OpticalChannelModel, GazeboReferenceMissMarksCardinalNeighbors)
+{
+    const auto table = makeFrameTable();
+    auto inputs = makeFrame(*table, 3);
+    inputs[4].return_kind = OpticalReturnKind::kNone;
+    inputs[4].geometric_hit = false;
+    inputs[4].path_length_m = 0.0;
+    inputs[4].reported_range_m = 0.0;
+
+    OpticalChannelModelConfig config;
+    config.edge_discontinuity_threshold_m = 5.0;
+    config.edge_suppression_probability = 1.0;
+    const OpticalChannelModel model(config);
+    const auto output = model.processRevolution(inputs, *table, {});
+
+    const std::set<std::size_t> expected_suppressed{1u, 3u, 4u, 5u, 7u};
+    for (std::size_t index = 0; index < output.size(); ++index) {
+        EXPECT_EQ(
+            output[index].hasReturn(),
+            expected_suppressed.count(index) == 0u)
+            << "linear_index=" << index;
+    }
+}
+
+TEST(OpticalChannelModel, GazeboReferenceTopologyDoesNotWrapAzimuthSeam)
+{
+    const auto table = makeFrameTable(4, 1);
+    auto inputs = makeFrame(*table, 2, 10.0);
+    inputs[2].path_length_m = 20.0;
+    inputs[2].reported_range_m = 20.0;
+    inputs[3].path_length_m = 20.0;
+    inputs[3].reported_range_m = 20.0;
+
+    OpticalChannelModelConfig config;
+    config.edge_discontinuity_threshold_m = 5.0;
+    config.edge_suppression_probability = 1.0;
+    const OpticalChannelModel model(config);
+    const auto output = model.processRevolution(inputs, *table, {});
+
+    ASSERT_EQ(output.size(), 4u);
+    EXPECT_TRUE(output[0].hasReturn());
+    EXPECT_FALSE(output[1].hasReturn());
+    EXPECT_FALSE(output[2].hasReturn());
+    EXPECT_TRUE(output[3].hasReturn());
+}
+
+TEST(OpticalChannelModel, CompleteRevolutionRejectsBrokenCoverage)
+{
+    const auto table = makeFrameTable();
+    auto inputs = makeFrame(*table, 4);
+    OpticalChannelModelConfig config;
+    config.edge_discontinuity_threshold_m = 0.15;
+    const OpticalChannelModel model(config);
+
+    EXPECT_THROW(
+        model.processRevolution(
+            std::span<const NormalizedOpticalReturn>(inputs).first(
+                inputs.size() - 1u),
+            *table, {}),
+        std::invalid_argument);
+
+    auto duplicate = inputs;
+    duplicate.back().identity = duplicate.front().identity;
+    EXPECT_THROW(
+        model.processRevolution(duplicate, *table, {}),
+        std::invalid_argument);
+
+    auto mixed_revolution = inputs;
+    ++mixed_revolution.back().identity.revolution;
+    EXPECT_THROW(
+        model.processRevolution(mixed_revolution, *table, {}),
+        std::invalid_argument);
+
+    auto wrong_timing = inputs;
+    ++wrong_timing.back().identity.time_offset_ns;
+    EXPECT_THROW(
+        model.processRevolution(wrong_timing, *table, {}),
+        std::invalid_argument);
+
+    EXPECT_THROW(model.process(inputs.front(), {}), std::logic_error);
+    EXPECT_THROW(model.process(inputs, {}), std::logic_error);
+}
+
 TEST(OpticalChannelModel, VersionedNoisyChannelGoldenVector)
 {
-    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 1);
+    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 2);
     OpticalChannelModelConfig config;
     config.range_resolution_m = 0.001;
     config.range_noise_min_std_m = 0.01;
@@ -500,6 +708,17 @@ TEST(OpticalChannelModel, RejectsSecondaryReturnsAndInvertedNoiseEnvelope)
     OpticalChannelModelConfig invalid_config;
     invalid_config.range_noise_min_std_m = 0.02;
     invalid_config.range_noise_max_std_m = 0.01;
+    EXPECT_THROW(
+        static_cast<void>(OpticalChannelModel{invalid_config}),
+        std::invalid_argument);
+
+    invalid_config = OpticalChannelModelConfig{};
+    invalid_config.edge_discontinuity_threshold_m = -0.01;
+    EXPECT_THROW(
+        static_cast<void>(OpticalChannelModel{invalid_config}),
+        std::invalid_argument);
+    invalid_config = OpticalChannelModelConfig{};
+    invalid_config.edge_suppression_probability = 1.01;
     EXPECT_THROW(
         static_cast<void>(OpticalChannelModel{invalid_config}),
         std::invalid_argument);
