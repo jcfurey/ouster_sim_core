@@ -104,6 +104,12 @@ reflectance and passive near-IR. A present zero is a real black response, not a
 request for fallback material behavior. Its stateless random key includes the
 seed, sensor stream, epoch, revolution, measurement, ring, return, effect, and
 subdraw, so call order and physics-batch partitioning cannot change a sample.
+Physical `path_length_m` drives received-signal attenuation, while
+`reported_range_m` drives detection, noise, quantization, and the packet range.
+They may differ even for a direct return when the simulator casts from the
+translated beam origin but Ouster's packet convention reports the
+lidar-origin-equivalent range; transmitted and ghost paths may separate them
+further.
 The integer mixer and open-interval uniform mapping are bit-exact contract
 surfaces. Gaussian and noisy-channel goldens are frozen for the supported
 toolchain; different `libm` implementations are compared with documented

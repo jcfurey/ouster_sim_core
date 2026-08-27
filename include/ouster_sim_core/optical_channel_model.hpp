@@ -40,10 +40,12 @@ enum class OpticalReturnKind : std::uint8_t {
 /// explicit presence semantics and is multiplied by the configured near-IR
 /// scale. `path_length_m` drives received signal attenuation, while
 /// `reported_range_m` drives detection, range noise, quantization, and packet
-/// range. They are equal for direct returns but intentionally remain separate
-/// for transmitted, refracted, and ghost paths. `incident_angle_rad`, when
-/// available, is the unsigned angle between the incoming ray and the oriented
-/// surface normal in [0, pi/2]. It is retained for future calibrated models;
+/// range. They may differ for a direct return when a simulator casts from the
+/// translated beam origin but the packet range follows the lidar-origin
+/// convention; transmitted, refracted, and ghost paths may separate them
+/// further. `incident_angle_rad`, when available, is the unsigned angle between
+/// the incoming ray and the oriented surface normal in [0, pi/2]. It is retained
+/// for future calibrated models;
 /// apparent reflectance already includes the adapter's incidence response, so
 /// this scalar model does not apply the angle a second time. A kNone input is a
 /// true miss and must have both ranges set to zero.
