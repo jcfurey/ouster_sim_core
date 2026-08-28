@@ -72,8 +72,10 @@ std::chrono::nanoseconds packetBatchDrainSpan(
 }
 
 PacketPacingPolicy::PacketPacingPolicy(
-    std::chrono::nanoseconds nominal_frame_period)
-    : nominal_frame_period_(nominal_frame_period)
+    std::chrono::nanoseconds nominal_frame_period,
+    PacketDeliveryMode delivery_mode)
+    : nominal_frame_period_(nominal_frame_period),
+      delivery_mode_(delivery_mode)
 {
     // Reuse the public calculation so its validation remains the single
     // definition of a valid nominal period.
@@ -109,18 +111,20 @@ PacketPacingFramePlan PacketPacingPolicy::beginFrame(
     const auto producer_period = uses_observation
         ? *observed_period
         : nominal_frame_period_;
-    const auto drain_span = packetBatchDrainSpan(
-        nominal_frame_period_, observed_period);
+    const auto drain_span = delivery_mode_ == PacketDeliveryMode::kBurst
+        ? std::chrono::nanoseconds::zero()
+        : packetBatchDrainSpan(nominal_frame_period_, observed_period);
 
-    // A zero spacing would assign multiple packets the same deadline. Reject
-    // such a schedule instead of silently creating a burst at nanosecond
-    // resolution.
-    if (packet_count > static_cast<std::size_t>(drain_span.count())) {
+    if (delivery_mode_ == PacketDeliveryMode::kPaced &&
+        packet_count > static_cast<std::size_t>(drain_span.count())) {
         throw std::invalid_argument(
             "packet_count exceeds the drain span's nanosecond resolution");
     }
     const auto packet_spacing = std::chrono::nanoseconds(
-        drain_span.count() / static_cast<std::int64_t>(packet_count));
+        delivery_mode_ == PacketDeliveryMode::kBurst
+            ? 0
+            : drain_span.count() /
+                  static_cast<std::int64_t>(packet_count));
 
     // Validate the complete absolute schedule before mutating policy state.
     const auto last_offset = std::chrono::nanoseconds(

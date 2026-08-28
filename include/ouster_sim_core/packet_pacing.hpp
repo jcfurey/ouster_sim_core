@@ -12,6 +12,12 @@ namespace ouster_sim_core {
 using PacketPacingTimePoint = std::chrono::time_point<
     std::chrono::steady_clock, std::chrono::nanoseconds>;
 
+/// Select hardware-like packet spacing or immediate whole-frame delivery.
+enum class PacketDeliveryMode {
+    kPaced,
+    kBurst,
+};
+
 /// Spread a frame over 80% of its observed producer interval.
 ///
 /// A missing or non-positive observation falls back to `nominal_period`. The
@@ -40,18 +46,23 @@ struct PacketPacingFramePlan {
 /// absolute deadlines so individual late wakeups do not accumulate drift.
 /// Call `markPacketPublished()` after each successful publication.
 ///
-/// A pause invalidates the producer-period observation. On resume, the next
-/// unpublished packet is scheduled one normal packet spacing after the
-/// injected resume time, shifting all subsequent absolute deadlines and
-/// preventing a catch-up burst. `reset()` cancels the active frame and clears
-/// cadence history but intentionally preserves the paused state.
+/// Burst delivery assigns every packet the `drain_started_at` deadline. A
+/// pause invalidates the producer-period observation. On resume, paced
+/// delivery shifts the next packet by one normal spacing; burst delivery is
+/// immediately due. `reset()` cancels the active frame and clears cadence
+/// history but intentionally preserves the paused state.
 class PacketPacingPolicy {
 public:
     explicit PacketPacingPolicy(
-        std::chrono::nanoseconds nominal_frame_period);
+        std::chrono::nanoseconds nominal_frame_period,
+        PacketDeliveryMode delivery_mode = PacketDeliveryMode::kPaced);
 
     const std::chrono::nanoseconds & nominalFramePeriod() const noexcept {
         return nominal_frame_period_;
+    }
+
+    PacketDeliveryMode deliveryMode() const noexcept {
+        return delivery_mode_;
     }
 
     PacketPacingFramePlan beginFrame(
@@ -73,8 +84,8 @@ public:
     /// Idempotently enter the paused state and invalidate cadence history.
     void pause() noexcept;
 
-    /// Idempotently resume. An active frame continues without a catch-up
-    /// burst; its next packet becomes due one packet spacing after `resumed_at`.
+    /// Idempotently resume. The active frame's next packet becomes due one
+    /// packet spacing after `resumed_at` (immediately in burst mode).
     void resume(PacketPacingTimePoint resumed_at);
 
     /// Cancel any active frame and make the next frame use nominal cadence.
@@ -84,6 +95,7 @@ public:
 
 private:
     std::chrono::nanoseconds nominal_frame_period_{};
+    PacketDeliveryMode delivery_mode_ = PacketDeliveryMode::kPaced;
     std::optional<PacketPacingTimePoint> previous_produced_at_;
 
     bool active_ = false;

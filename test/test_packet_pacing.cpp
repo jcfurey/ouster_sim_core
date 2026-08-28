@@ -14,6 +14,7 @@
 namespace {
 
 using namespace std::chrono_literals;
+using ouster_sim_core::PacketDeliveryMode;
 using ouster_sim_core::PacketPacingPolicy;
 using ouster_sim_core::PacketPacingTimePoint;
 using ouster_sim_core::packetBatchDrainSpan;
@@ -110,6 +111,27 @@ TEST(PacketPacing, OnePacketIsDueImmediatelyAndCompletesAtomically)
     policy.markPacketPublished();
     EXPECT_FALSE(policy.hasActiveFrame());
     EXPECT_EQ(policy.packetCount(), 0u);
+}
+
+TEST(PacketPacing, BurstModeMakesEveryPacketImmediatelyDue)
+{
+    PacketPacingPolicy policy(100ms, PacketDeliveryMode::kBurst);
+    const auto start = at(2s);
+    const auto plan = policy.beginFrame(start - 1ms, start, 64);
+
+    EXPECT_EQ(policy.deliveryMode(), PacketDeliveryMode::kBurst);
+    EXPECT_EQ(plan.producer_period, 100ms);
+    EXPECT_EQ(plan.drain_span, 0ns);
+    EXPECT_EQ(plan.packet_spacing, 0ns);
+    EXPECT_EQ(plan.first_deadline, start);
+    EXPECT_EQ(plan.last_deadline, start);
+
+    for (std::size_t i = 0; i < 64; ++i) {
+        ASSERT_EQ(policy.nextPacketIndex(), i);
+        ASSERT_EQ(policy.nextDeadline(), start);
+        policy.markPacketPublished();
+    }
+    EXPECT_FALSE(policy.hasActiveFrame());
 }
 
 TEST(PacketPacing, PauseResumeShiftsScheduleWithoutCatchUpBurst)
