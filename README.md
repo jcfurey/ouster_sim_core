@@ -29,7 +29,7 @@ The core currently owns:
   segmentation;
 - exact integer range/channel handoff and all-zero preservation for true
   misses;
-- row-major Ouster image layout conversion;
+- row-major Ouster image layout conversion and validated borrowed channel spans;
 - synchronous standard packet encoding, including headers and modern CRC;
 - a pure, clock-injected packet-pacing policy; and
 - simulator-neutral identity and full packet round-trip tests.
@@ -158,3 +158,24 @@ through Gen4. The current packet conformance fixture is still calibrated
 OS1-64 metadata with a 1024 x 64 frame and 16 columns per packet; additional
 metadata and packet fixtures remain required before claiming broad wire-level
 conformance.
+
+## Cross-simulator conformance (0.4.0)
+
+AGX and Gazebo embed the same core revision. `OusterScanFrameView` accepts
+existing producer buffers without copying them. The reusable-output encoder
+validates the complete frame before changing packet storage, retaining the
+owning-frame API for assemblers. `optical_value.hpp` provides a device-compatible
+presence rule: zero is supplied data, while absent/invalid dense-buffer input
+is resolved by the adapter before entering the strict typed optical model.
+
+`test/support/conformance_v1.hpp` contains common metadata/profile, complete
+frame, and exact noiseless optical fixtures. A fixture version describes its
+inputs and expected outputs independently of an engine. Both parents must run
+them against their production adapters and SDK providers when moving the pin.
+The optional `test/support/run_zenoh_packet_burst.py` owns an isolated ROS test
+router; it does not introduce a ROS dependency into the core library.
+
+Shared packet bytes and deterministic channel fixtures do not establish equal
+rendered scenes or equal random samples across GPU/CPU implementations. Keep
+physical path, reported range, return kind, material presence and random-key
+version explicit when moving additional optics into this core.

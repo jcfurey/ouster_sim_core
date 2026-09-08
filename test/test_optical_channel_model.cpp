@@ -3,6 +3,8 @@
 
 #include "ouster_sim_core/optical_channel_model.hpp"
 #include "ouster_sim_core/product_profile.hpp"
+#include "ouster_sim_core/optical_value.hpp"
+#include "support/conformance_v1.hpp"
 
 #include <gtest/gtest.h>
 
@@ -727,6 +729,27 @@ TEST(OpticalChannelModel, RejectsSecondaryReturnsAndInvertedNoiseEnvelope)
     auto secondary = surface(0, 0, 10.0);
     secondary.identity.return_index = 1;
     EXPECT_THROW(model.process(secondary, {}), std::invalid_argument);
+}
+
+TEST(OpticalChannelModel, SharedDenseBufferFixtures)
+{
+    const OpticalChannelModel model(OpticalChannelModelConfig{});
+    for (const auto & fixture : ouster_sim_core::conformance_v1::opticalCases) {
+        SCOPED_TRACE(fixture.name);
+        const auto output = model.process(fixture.input(), {});
+        EXPECT_EQ(output.range_mm, fixture.range_mm);
+        EXPECT_EQ(output.signal, fixture.signal);
+        EXPECT_EQ(output.reflectivity, fixture.reflectivity);
+        EXPECT_EQ(output.near_ir, fixture.near_ir);
+    }
+    const double values[]{0, .5, -1, std::numeric_limits<double>::infinity(),
+                          std::numeric_limits<double>::quiet_NaN()};
+    EXPECT_EQ(ouster_sim_core::opticalValueOrDefault(values, 0, 1.0), 0.0);
+    EXPECT_EQ(ouster_sim_core::opticalValueOrDefault(values, 1, 1.0), .5);
+    for (std::size_t i : {2, 3, 4}) {
+        EXPECT_EQ(ouster_sim_core::opticalValueOrDefault(values, i, 1.0), 1.0);
+    }
+    EXPECT_EQ(ouster_sim_core::opticalValueOrDefault<double>(nullptr, 0, .5), .5);
 }
 
 }  // namespace

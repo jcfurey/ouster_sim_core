@@ -14,7 +14,7 @@ namespace ouster_sim_core {
 namespace {
 
 void validateFrame(
-    const OusterScanFrame & frame,
+    const OusterScanFrameView & frame,
     const OusterMetadata & metadata)
 {
     if (frame.columns_per_frame != metadata.columnsPerFrame() ||
@@ -27,7 +27,8 @@ void validateFrame(
             "scan frame start timestamp must be non-negative");
     }
 
-    const std::size_t count = frame.sampleCount();
+    const std::size_t count = static_cast<std::size_t>(frame.columns_per_frame) *
+        frame.pixels_per_column;
     if (frame.column_timestamp_ns.size() != frame.columns_per_frame ||
         frame.range_mm.size() != count || frame.signal.size() != count ||
         frame.reflectivity.size() != count || frame.near_ir.size() != count) {
@@ -66,8 +67,31 @@ OusterPacketEncoder::OusterPacketEncoder(OusterMetadata metadata)
     metadata_.requirePrimaryReturnProfile();
 }
 
+OusterScanFrameView OusterScanFrameView::fromFrame(const OusterScanFrame & frame)
+{
+    return {frame.revolution, frame.frame_start_timestamp_ns,
+            frame.columns_per_frame, frame.pixels_per_column,
+            frame.column_timestamp_ns, frame.range_mm, frame.signal,
+            frame.reflectivity, frame.near_ir};
+}
+
 std::vector<EncodedLidarPacket> OusterPacketEncoder::encode(
     const OusterScanFrame & frame) const
+{
+    return encode(OusterScanFrameView::fromFrame(frame));
+}
+
+std::vector<EncodedLidarPacket> OusterPacketEncoder::encode(
+    const OusterScanFrameView & frame) const
+{
+    std::vector<EncodedLidarPacket> packets;
+    encode(frame, packets);
+    return packets;
+}
+
+void OusterPacketEncoder::encode(
+    const OusterScanFrameView & frame,
+    std::vector<EncodedLidarPacket> & packets) const
 {
     validateFrame(frame, metadata_);
 
@@ -78,11 +102,10 @@ std::vector<EncodedLidarPacket> OusterPacketEncoder::encode(
     const std::uint32_t packet_frame_id =
         metadata_.packetFrameId(frame.revolution);
 
-    std::vector<EncodedLidarPacket> packets;
-    packets.reserve(packet_count);
+    packets.resize(packet_count);
     for (std::uint32_t packet_index = 0;
          packet_index < packet_count; ++packet_index) {
-        EncodedLidarPacket packet;
+        auto & packet = packets[packet_index];
         packet.revolution = frame.revolution;
         packet.frame_id = packet_frame_id;
         packet.first_measurement_id = static_cast<std::uint16_t>(
@@ -145,9 +168,7 @@ std::vector<EncodedLidarPacket> OusterPacketEncoder::encode(
                 &crc,
                 sizeof(crc));
         }
-        packets.push_back(std::move(packet));
     }
-    return packets;
 }
 
 }  // namespace ouster_sim_core

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ouster_sim_core/metadata.hpp"
+#include "support/conformance_v1.hpp"
 #include "ouster_sim_core/packet_encoder.hpp"
 #include "ouster_sim_core/revolution_assembler.hpp"
 
@@ -263,6 +264,46 @@ TEST(OusterPacketEncoder, RejectsDualReturnProfileBeforeEncoding)
         metadataJsonWithProfile("RNG19_RFL8_SIG16_NIR16_DUAL"));
     ASSERT_EQ(metadata.activeReturnCount(), 2u);
     EXPECT_THROW(OusterPacketEncoder{metadata}, std::invalid_argument);
+}
+
+TEST(OusterPacketEncoder, SharedFixturesAndBorrowedBuffersRetainWireContract)
+{
+    namespace fixture = ouster_sim_core::conformance_v1;
+    for (const auto * profile : fixture::primaryProfiles) {
+        SCOPED_TRACE(profile);
+        const auto metadata = OusterMetadata::fromJson(
+            fixture::metadataJson(metadataPath(), profile));
+        const OusterPacketEncoder encoder(metadata);
+        auto frame = fixture::frame(metadata, 65536);
+        const auto view = ouster_sim_core::OusterScanFrameView::fromFrame(frame);
+        const auto owned = encoder.encode(frame);
+        std::vector<ouster_sim_core::EncodedLidarPacket> borrowed;
+        encoder.encode(view, borrowed);
+        ASSERT_EQ(owned.size(), 64u);
+        ASSERT_EQ(borrowed.size(), owned.size());
+        ouster::sdk::core::PacketFormat format(
+            ouster::sdk::core::SensorInfo(metadata.publishedJson()));
+        for (std::size_t i = 0; i < owned.size(); ++i) {
+            EXPECT_EQ(borrowed[i].bytes, owned[i].bytes);
+            EXPECT_EQ(format.frame_id(borrowed[i].bytes.data()), 0u);
+            if (std::string(profile) != "LEGACY") {
+                const auto & bytes = borrowed[i].bytes;
+                EXPECT_EQ(format.packet_type(bytes.data()), 1u);
+                EXPECT_EQ(format.init_id(bytes.data()), 1234u);
+                EXPECT_EQ(format.prod_sn(bytes.data()), 123456789012ULL);
+                EXPECT_EQ(format.crc(bytes.data(), bytes.size()),
+                          format.calculate_crc(bytes.data(), bytes.size()));
+            }
+        }
+        // A bad borrowed span must not replace any part of the previous batch.
+        auto invalid = view;
+        invalid.range_mm = invalid.range_mm.first(1);
+        EXPECT_THROW(encoder.encode(invalid, borrowed), std::invalid_argument);
+        EXPECT_EQ(borrowed.front().bytes, owned.front().bytes);
+        frame.column_timestamp_ns[1] = frame.column_timestamp_ns[0];
+        EXPECT_THROW(encoder.encode(view, borrowed), std::invalid_argument);
+        EXPECT_EQ(borrowed.back().bytes, owned.back().bytes);
+    }
 }
 
 }  // namespace
