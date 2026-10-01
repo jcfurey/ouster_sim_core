@@ -21,6 +21,7 @@ class PacketWriter;
 namespace ouster_sim_core {
 
 class OusterPacketEncoder;
+class OusterImuPacketPipeline;
 
 /// SDK-neutral semantic firmware version parsed from source metadata.
 struct OusterFirmwareVersion {
@@ -49,6 +50,11 @@ public:
     std::uint16_t pixelsPerColumn() const noexcept;
     std::uint16_t columnsPerPacket() const noexcept;
     std::size_t lidarPacketSize() const noexcept;
+    std::size_t imuPacketSize() const noexcept;
+    std::uint32_t imuMeasurementsPerPacket() const noexcept;
+    std::uint32_t imuPacketsPerFrame() const noexcept;
+    bool legacyImuProfile() const noexcept;
+    const std::string & activeImuUdpProfile() const noexcept;
     std::uint64_t sensorSerial() const noexcept;
     std::uint32_t initializationId() const noexcept;
 
@@ -115,6 +121,7 @@ private:
 
     std::shared_ptr<Impl> impl_;
     friend class OusterPacketEncoder;
+    friend class OusterImuPacketPipeline;
 };
 
 }  // namespace ouster_sim_core

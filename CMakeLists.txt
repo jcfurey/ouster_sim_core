@@ -21,6 +21,7 @@ endif()
 
 add_library(ouster_sim_core STATIC
   src/firing_table.cpp
+  src/imu_packet_pipeline.cpp
   src/metadata.cpp
   src/optical_channel_model.cpp
   src/packet_encoder.cpp
@@ -95,4 +96,13 @@ if(OUSTER_SIM_CORE_BUILD_TESTING)
     ouster_sim_core
     GTest::gtest_main)
   gtest_discover_tests(ouster_sim_core_test_packet_roundtrip)
+
+  add_executable(ouster_sim_core_test_imu_packet_pipeline
+    test/test_imu_packet_pipeline.cpp)
+  target_compile_definitions(ouster_sim_core_test_imu_packet_pipeline PRIVATE
+    OUSTER_SIM_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data")
+  target_link_libraries(ouster_sim_core_test_imu_packet_pipeline PRIVATE
+    ouster_sim_core
+    GTest::gtest_main)
+  gtest_discover_tests(ouster_sim_core_test_imu_packet_pipeline)
 endif()

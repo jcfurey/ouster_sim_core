@@ -113,6 +113,8 @@ struct OusterMetadata::Impl {
             source_version.simple_version_string();
         active_lidar_udp_profile = ouster::sdk::core::to_string(
             sensor_info->format.udp_profile_lidar);
+        active_imu_udp_profile = ouster::sdk::core::to_string(
+            sensor_info->format.udp_profile_imu);
         source_low_data_profile =
             isLowDataProfile(sensor_info->format.udp_profile_lidar);
 
@@ -212,6 +214,7 @@ struct OusterMetadata::Impl {
     std::string source_product_line;
     std::string source_product_part_number;
     std::string active_lidar_udp_profile;
+    std::string active_imu_udp_profile;
     OusterFirmwareVersion source_firmware_version;
     std::shared_ptr<ouster::sdk::core::SensorInfo> sensor_info;
     ouster::sdk::core::PacketFormat packet_format;
@@ -263,6 +266,34 @@ std::uint16_t OusterMetadata::columnsPerPacket() const noexcept
 std::size_t OusterMetadata::lidarPacketSize() const noexcept
 {
     return impl_->packet_writer.lidar_packet_size;
+}
+
+std::size_t OusterMetadata::imuPacketSize() const noexcept
+{
+    return impl_->packet_writer.imu_packet_size;
+}
+
+std::uint32_t OusterMetadata::imuMeasurementsPerPacket() const noexcept
+{
+    return static_cast<std::uint32_t>(
+        impl_->packet_writer.imu_measurements_per_packet);
+}
+
+std::uint32_t OusterMetadata::imuPacketsPerFrame() const noexcept
+{
+    return static_cast<std::uint32_t>(
+        impl_->packet_writer.imu_packets_per_frame);
+}
+
+bool OusterMetadata::legacyImuProfile() const noexcept
+{
+    return impl_->packet_writer.udp_profile_imu ==
+        ouster::sdk::core::UDPProfileIMU::LEGACY;
+}
+
+const std::string & OusterMetadata::activeImuUdpProfile() const noexcept
+{
+    return impl_->active_imu_udp_profile;
 }
 
 std::uint64_t OusterMetadata::sensorSerial() const noexcept
