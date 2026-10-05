@@ -319,7 +319,16 @@ std::vector<EncodedOusterImuPacket> OusterImuPacketPipeline::ingest(
         *impl_->next_sample_timestamp_ns += period;
         if (impl_->pending_samples.size() ==
             impl_->contract_value.measurements_per_packet) {
-            output.push_back(impl_->encodePending());
+            // Drop the samples of a packet that cannot be encoded; keeping
+            // them would leave the buffer permanently over-full and stop all
+            // further packets.
+            try {
+                output.push_back(impl_->encodePending());
+            } catch (...) {
+                impl_->pending_samples.clear();
+                impl_->previous = state;
+                throw;
+            }
             impl_->pending_samples.clear();
         }
     }

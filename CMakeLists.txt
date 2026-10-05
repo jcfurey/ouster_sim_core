@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ouster_sim_core VERSION 0.4.0 LANGUAGES CXX)
+project(ouster_sim_core VERSION 0.5.0 LANGUAGES CXX)
 
 if(NOT DEFINED CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 20)
@@ -105,4 +105,27 @@ if(OUSTER_SIM_CORE_BUILD_TESTING)
     ouster_sim_core
     GTest::gtest_main)
   gtest_discover_tests(ouster_sim_core_test_imu_packet_pipeline)
+
+  # Optional wire conformance against physical-sensor captures shipped in the
+  # Ouster SDK source tree (its tests/ directory).
+  set(OUSTER_SIM_CORE_SDK_TEST_DATA_DIR "" CACHE PATH
+    "Ouster SDK tests/ directory holding pcaps/ and metadata/ fixtures")
+  if(OUSTER_SIM_CORE_SDK_TEST_DATA_DIR)
+    add_executable(ouster_sim_core_test_real_capture_conformance
+      test/test_real_capture_conformance.cpp)
+    target_compile_definitions(
+      ouster_sim_core_test_real_capture_conformance PRIVATE
+      OUSTER_SIM_CORE_SDK_TEST_DATA_DIR="${OUSTER_SIM_CORE_SDK_TEST_DATA_DIR}")
+    target_link_libraries(ouster_sim_core_test_real_capture_conformance PRIVATE
+      ouster_sim_core
+      GTest::gtest_main)
+    gtest_discover_tests(ouster_sim_core_test_real_capture_conformance)
+  endif()
+
+  add_executable(ouster_sim_core_bench_packet_encoder
+    test/bench_packet_encoder.cpp)
+  target_compile_definitions(ouster_sim_core_bench_packet_encoder PRIVATE
+    OUSTER_SIM_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data")
+  target_link_libraries(ouster_sim_core_bench_packet_encoder PRIVATE
+    ouster_sim_core)
 endif()

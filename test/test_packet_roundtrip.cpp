@@ -12,8 +12,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -256,6 +258,138 @@ TEST(OusterPacketEncoder, LowDataRangeBoundaryRoundTripsWithoutMasking)
 
     frame.range_mm[frame.sdkImageIndex(0, 0)] = 262135u;
     EXPECT_THROW(encoder.encode(frame), std::invalid_argument);
+}
+
+TEST(OusterPacketEncoder, NarrowChannelFieldsSaturateInsteadOfWrapping)
+{
+    // RNG15_RFL8_NIR8 stores NEAR_IR >> 4 in eight bits. The SDK writer masks,
+    // so 5000 would alias to 896 (dimmer than 4080) if not saturated.
+    const auto metadata = OusterMetadata::fromJson(
+        metadataJsonWithProfile("RNG15_RFL8_NIR8"));
+    OusterPacketEncoder encoder(metadata);
+    auto frame = blankFrame(metadata);
+    frame.near_ir[frame.sdkImageIndex(0, 0)] = 5000u;
+    frame.near_ir[frame.sdkImageIndex(0, 1)] = 4080u;
+    frame.near_ir[frame.sdkImageIndex(0, 2)] = 65535u;
+    frame.near_ir[frame.sdkImageIndex(0, 3)] = 1000u;
+
+    const auto packets = encoder.encode(frame);
+    ouster::sdk::core::PacketFormat format(
+        ouster::sdk::core::SensorInfo(metadata.publishedJson()));
+    std::vector<std::uint16_t> near_ir(metadata.pixelsPerColumn());
+    format.col_field<std::uint16_t>(
+        format.nth_col(0, packets.front().bytes.data()),
+        ouster::sdk::core::ChanField::NEAR_IR, near_ir.data());
+    EXPECT_EQ(near_ir[0], 4080u);
+    EXPECT_EQ(near_ir[1], 4080u);
+    EXPECT_EQ(near_ir[2], 4080u);
+    // In-range values keep the profile's documented 16-count quantization.
+    EXPECT_EQ(near_ir[3], 992u);
+    // Saturation uses a private copy; the caller's frame is untouched.
+    EXPECT_EQ(frame.near_ir[frame.sdkImageIndex(0, 0)], 5000u);
+}
+
+TEST(OusterPacketEncoder, ColumnWindowMatchesSensorPacketTopology)
+{
+    // A window wrapping through measurement 0 selects columns 1000..1023 and
+    // 0..23, i.e. packets 62, 63, 0 and 1. The sensor sends only those, in
+    // measurement order, with out-of-window columns invalid and zeroed.
+    auto json = metadataJsonWithProfile("RNG19_RFL8_SIG16_NIR16");
+    const std::string full = "\"column_window\": [\n      0,\n      1023\n    ]";
+    const auto position = json.find(full);
+    ASSERT_NE(position, std::string::npos);
+    json.replace(position, full.size(), "\"column_window\": [1000, 23]");
+    const auto metadata = OusterMetadata::fromJson(json);
+    ASSERT_FALSE(metadata.fullColumnWindow());
+    ASSERT_EQ(metadata.columnWindowFirst(), 1000u);
+    ASSERT_EQ(metadata.columnWindowLast(), 23u);
+    EXPECT_TRUE(metadata.isColumnInWindow(1023));
+    EXPECT_TRUE(metadata.isColumnInWindow(0));
+    EXPECT_FALSE(metadata.isColumnInWindow(24));
+    EXPECT_FALSE(metadata.isColumnInWindow(999));
+    ASSERT_EQ(metadata.lidarPacketsPerFrame(), 4u);
+
+    ouster::sdk::core::SensorInfo info(metadata.publishedJson());
+    ASSERT_EQ(static_cast<int>(metadata.lidarPacketsPerFrame()),
+              info.format.lidar_packets_per_frame());
+
+    OusterPacketEncoder encoder(metadata);
+    auto frame = blankFrame(metadata);
+    std::fill(frame.range_mm.begin(), frame.range_mm.end(), 4242u);
+    std::fill(frame.signal.begin(), frame.signal.end(), 7u);
+    const auto packets = encoder.encode(frame);
+    ASSERT_EQ(packets.size(), 4u);
+    const std::vector<std::uint16_t> first_ids{0, 16, 992, 1008};
+    ouster::sdk::core::PacketFormat format(info);
+    for (std::size_t index = 0; index < packets.size(); ++index) {
+        EXPECT_EQ(packets[index].first_measurement_id, first_ids[index]);
+        for (int local = 0; local < format.columns_per_packet; ++local) {
+            const auto * column =
+                format.nth_col(local, packets[index].bytes.data());
+            const auto measurement = format.col_measurement_id(column);
+            const bool in_window = metadata.isColumnInWindow(measurement);
+            EXPECT_EQ(format.col_status(column) & 1u, in_window ? 1u : 0u);
+            EXPECT_EQ(format.col_timestamp(column),
+                      frame.column_timestamp_ns[measurement]);
+            std::vector<std::uint32_t> range(metadata.pixelsPerColumn());
+            format.col_field<std::uint32_t>(
+                column, ouster::sdk::core::ChanField::RANGE, range.data());
+            EXPECT_EQ(range.front(), in_window ? 4242u : 0u) << measurement;
+        }
+    }
+
+    // The SDK validator discards an out-of-bounds window and keeps the full
+    // default, which the core then reports consistently.
+    auto out_of_bounds = json;
+    out_of_bounds.replace(out_of_bounds.find("[1000, 23]"), 10, "[0, 1024]");
+    const auto fallback = OusterMetadata::fromJson(out_of_bounds);
+    EXPECT_TRUE(fallback.fullColumnWindow());
+    EXPECT_EQ(fallback.lidarPacketsPerFrame(), 64u);
+}
+
+TEST(OusterPacketEncoder, LegacyColumnsCarrySensorHeaderFields)
+{
+    for (const char * mode : {"512x10", "1024x10", "2048x10"}) {
+        SCOPED_TRACE(mode);
+        auto json = metadataJsonWithProfile("LEGACY");
+        const std::uint32_t width = static_cast<std::uint32_t>(
+            std::stoul(std::string(mode).substr(0, std::string(mode).find('x'))));
+        const auto replace_all = [&](const std::string & before,
+                                     const std::string & after) {
+            for (auto at = json.find(before); at != std::string::npos;
+                 at = json.find(before, at + after.size())) {
+                json.replace(at, before.size(), after);
+            }
+        };
+        replace_all("\"1024x10\"", "\"" + std::string(mode) + "\"");
+        replace_all("\"columns_per_frame\": 1024",
+                    "\"columns_per_frame\": " + std::to_string(width));
+        replace_all("1023\n    ]", std::to_string(width - 1) + "\n    ]");
+        const auto metadata = OusterMetadata::fromJson(json);
+        ASSERT_EQ(metadata.columnsPerFrame(), width);
+
+        auto frame = blankFrame(metadata);
+        frame.revolution = 70000;  // wraps the 16-bit legacy frame ID
+        const auto packets = OusterPacketEncoder(metadata).encode(frame);
+        ASSERT_EQ(packets.size(), width / 16u);
+        ouster::sdk::core::PacketFormat format(
+            ouster::sdk::core::SensorInfo(metadata.publishedJson()));
+        for (const auto & packet : packets) {
+            for (int local = 0; local < format.columns_per_packet; ++local) {
+                const auto * column = format.nth_col(local, packet.bytes.data());
+                std::uint16_t frame_id = 0;
+                std::uint32_t encoder_count = 0;
+                std::uint32_t status = 0;
+                std::memcpy(&frame_id, column + 10, sizeof(frame_id));
+                std::memcpy(&encoder_count, column + 12, sizeof(encoder_count));
+                std::memcpy(&status, column + format.col_size - 4, sizeof(status));
+                const auto measurement = format.col_measurement_id(column);
+                EXPECT_EQ(frame_id, 70000u % 65536u);
+                EXPECT_EQ(encoder_count, measurement * (90112u / width));
+                EXPECT_EQ(status, 0xffffffffu);
+            }
+        }
+    }
 }
 
 TEST(OusterPacketEncoder, RejectsDualReturnProfileBeforeEncoding)
