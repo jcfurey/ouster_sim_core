@@ -79,9 +79,25 @@ set(OUSTER_SIM_CORE_BUILD_TESTING ON)
 add_subdirectory(path/to/ouster_sim_core)
 ```
 
-Then configure, build, and run `ctest --output-on-failure`. The tested
-provider revision is Ouster SDK v0.16.2 commit
-`401c647844b801784535e5a5ae2c2962d4f85cd1`.
+Then configure, build, and run `ctest --output-on-failure`.
+
+`test/standalone/CMakeLists.txt` is a ready-made superproject that builds the
+SDK client from a source checkout instead:
+
+```bash
+cmake -S test/standalone -B build -DCMAKE_BUILD_TYPE=Release \
+  -DOUSTER_SDK_SOURCE_DIR=/path/to/ouster-sdk \
+  -DOUSTER_SIM_CORE_SDK_TEST_DATA_DIR=/path/to/ouster-sdk/tests
+cmake --build build
+ctest --test-dir build/core --output-on-failure
+build/core/ouster_sim_core_bench_packet_encoder
+```
+
+CI (`.github/workflows/ci.yaml`) runs this in Release and under
+AddressSanitizer/UndefinedBehaviorSanitizer against Ouster SDK v0.16.2 commit
+`358c256d93592b9002d26315873269a2d4523c5d`, the provider the AGX and Gazebo
+parents pin. UBSan's alignment check is disabled because the SDK's packet
+field accessors intentionally perform unaligned 64-bit loads.
 
 ## Data contract
 
@@ -153,11 +169,51 @@ profile contains the WINDOW field but legacy firmware text would make the
 supported decoder discard it, only the published firmware advertisement is
 raised to the layout-compatible minimum.
 
+Metadata also exposes the inclusive `column_window`. Like a sensor, the
+encoder emits only packets that contain at least one in-window column
+(`lidarPacketsPerFrame()`), in measurement order. Out-of-window columns inside
+an emitted packet keep their measurement ID and timestamp, carry status 0 and
+zeroed channel data. A window may wrap through measurement 0. The SDK
+validator replaces an out-of-bounds window with the full default.
+
+Legacy-profile packets repeat the frame ID in every column header, report the
+90,112-count angle encoder (`measurement_id * 90112 / columns_per_frame`), and
+mark valid columns with status `0xffffffff`, matching captured sensor packets.
+Channel fields narrower than their source type saturate rather than wrap: the
+low-data `NIR8` slot stores `NEAR_IR >> 4`, so values above 4080 encode as
+4080 instead of aliasing to an unrelated dim value.
+
 The product catalog covers OS0, OS1, OS2, OSDome, and OS1 MAX across Gen1
 through Gen4. The current packet conformance fixture is still calibrated
-OS1-64 metadata with a 1024 x 64 frame and 16 columns per packet; additional
-metadata and packet fixtures remain required before claiming broad wire-level
-conformance.
+OS1-64 metadata with a 1024 x 64 frame and 16 columns per packet.
+
+`test/test_real_capture_conformance.cpp` additionally checks the encoder
+against packets captured from physical sensors that ship with the Ouster SDK
+source tree, when `OUSTER_SIM_CORE_SDK_TEST_DATA_DIR` names its `tests/`
+directory. Each case decodes one complete captured frame, re-encodes the
+decoded fields and column timestamps, and requires byte-identical packet and
+column headers, documented packet sizes, identical packet topology, identical
+decoded channel values, and identical `ScanBatcher` scans:
+
+| Capture | Firmware | Profile | Frame |
+| --- | --- | --- | --- |
+| OS-2-32-U0 | 2.0.0 | `LEGACY` | 1024 x 32 |
+| OS-1-32-G | 2.1.1 | `LEGACY` | 1024 x 32 |
+| OS-2-128-U1 | 2.3.0 | `RNG19_RFL8_SIG16_NIR16` | 1024 x 128 |
+| OS-0-128-U1 | 2.3.0 | `RNG15_RFL8_NIR8` | 1024 x 128 |
+| OS-0-128 | 2.3.0 | `RNG15_RFL8_NIR8`, window [1, 256] | 512 x 128 |
+
+The same suite places simulated hits through each capture's calibration and
+the SDK XYZ lookup table (within the 0.5 mm integer-range quantization), and
+round-trips the captured legacy IMU packets' g and deg/s units through the IMU
+pipeline. Captured range flags and firmware footer debug words are not
+modelled and are excluded. Dual-return captures are rejected at construction,
+as the frame contract is primary-return-only.
+
+`ouster_sim_core_bench_packet_encoder` reports encode latency per profile and
+mode. On a 4-core x86-64 CI-class VM, a Release build encodes a 2048 x 64
+`RNG19_RFL8_SIG16_NIR16` frame in about 5 ms (p99 under 6% of a 10 Hz frame
+budget) and every other tested mode in under 3 ms.
 
 ## Cross-simulator conformance (0.4.0)
 

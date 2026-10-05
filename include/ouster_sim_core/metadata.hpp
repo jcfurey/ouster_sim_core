@@ -65,6 +65,20 @@ public:
     /// adapters from duplicating SDK-specific header-width rules.
     std::uint32_t packetFrameId(std::uint64_t revolution) const noexcept;
 
+    /// Inclusive measurement-ID window over which the sensor reports data.
+    ///
+    /// `first > last` denotes a window that wraps through measurement 0. A
+    /// sensor emits only packets containing at least one in-window column and
+    /// reports out-of-window columns in those packets as invalid.
+    std::uint32_t columnWindowFirst() const noexcept;
+    std::uint32_t columnWindowLast() const noexcept;
+    bool isColumnInWindow(std::uint32_t measurement_id) const noexcept;
+    bool fullColumnWindow() const noexcept;
+
+    /// Lidar packets a sensor emits per frame with the column window applied.
+    std::uint32_t lidarPacketsPerFrame() const noexcept;
+    bool isPacketInWindow(std::uint32_t packet_index) const noexcept;
+
     /// Active source UDP lidar profile as an SDK-neutral stable name.
     const std::string & activeLidarUdpProfile() const noexcept;
 

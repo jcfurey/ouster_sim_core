@@ -133,6 +133,16 @@ struct OusterMetadata::Impl {
                 "columns_per_packet must be nonzero and divide "
                 "columns_per_frame exactly");
         }
+        const auto window = sensor_info->format.column_window;
+        if (window.first < 0 || window.second < 0 ||
+            static_cast<std::uint32_t>(window.first) >= width ||
+            static_cast<std::uint32_t>(window.second) >= width) {
+            throw std::invalid_argument(
+                "Ouster metadata column_window must lie within "
+                "columns_per_frame");
+        }
+        column_window_first = static_cast<std::uint32_t>(window.first);
+        column_window_last = static_cast<std::uint32_t>(window.second);
         if (packet_writer.lidar_packet_size == 0) {
             throw std::invalid_argument(
                 "Ouster metadata selects a lidar profile with no packets");
@@ -223,6 +233,8 @@ struct OusterMetadata::Impl {
     std::vector<double> beam_azimuth_deg;
     double beam_origin_m = 0.0;
     std::uint32_t encodable_range_mask_mm = 0;
+    std::uint32_t column_window_first = 0;
+    std::uint32_t column_window_last = 0;
     std::uint8_t active_return_count = 0;
     bool source_low_data_profile = false;
     bool firmware_adjusted = false;
@@ -313,6 +325,62 @@ std::uint32_t OusterMetadata::packetFrameId(
         static_cast<std::uint64_t>(impl_->packet_writer.max_frame_id) +
         std::uint64_t{1};
     return static_cast<std::uint32_t>(revolution % modulus);
+}
+
+std::uint32_t OusterMetadata::columnWindowFirst() const noexcept
+{
+    return impl_->column_window_first;
+}
+
+std::uint32_t OusterMetadata::columnWindowLast() const noexcept
+{
+    return impl_->column_window_last;
+}
+
+bool OusterMetadata::isColumnInWindow(
+    std::uint32_t measurement_id) const noexcept
+{
+    const auto first = impl_->column_window_first;
+    const auto last = impl_->column_window_last;
+    if (measurement_id >= columnsPerFrame()) {
+        return false;
+    }
+    return first <= last
+        ? measurement_id >= first && measurement_id <= last
+        : measurement_id >= first || measurement_id <= last;
+}
+
+bool OusterMetadata::fullColumnWindow() const noexcept
+{
+    const auto first = impl_->column_window_first;
+    const auto last = impl_->column_window_last;
+    return (first == 0 && last + 1u == columnsPerFrame()) || first == last + 1u;
+}
+
+bool OusterMetadata::isPacketInWindow(
+    std::uint32_t packet_index) const noexcept
+{
+    const std::uint32_t columns_per_packet = columnsPerPacket();
+    const std::uint32_t first_column = packet_index * columns_per_packet;
+    if (columns_per_packet == 0 || first_column >= columnsPerFrame()) {
+        return false;
+    }
+    for (std::uint32_t column = 0; column < columns_per_packet; ++column) {
+        if (isColumnInWindow(first_column + column)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::uint32_t OusterMetadata::lidarPacketsPerFrame() const noexcept
+{
+    const std::uint32_t packets = columnsPerFrame() / columnsPerPacket();
+    std::uint32_t count = 0;
+    for (std::uint32_t packet = 0; packet < packets; ++packet) {
+        count += isPacketInWindow(packet) ? 1u : 0u;
+    }
+    return count;
 }
 
 const std::string & OusterMetadata::activeLidarUdpProfile() const noexcept

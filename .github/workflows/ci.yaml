@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build + test (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Release
+            build_type: Release
+            cxx_flags: ""
+            linker_flags: ""
+          # The SDK's packet field accessors intentionally use unaligned
+          # 64-bit loads (see FieldInfo in ouster_client/src/parsing.cpp), so
+          # only the alignment check is disabled.
+          - name: ASan+UBSan
+            build_type: Debug
+            cxx_flags: >-
+              -fsanitize=address,undefined -fno-sanitize=alignment
+              -fno-sanitize-recover=undefined -fno-omit-frame-pointer
+            linker_flags: -fsanitize=address,undefined
+    env:
+      # The provider revision the AGX and Gazebo parents pin (v0.16.2+7).
+      OUSTER_SDK_REF: 358c256d93592b9002d26315873269a2d4523c5d
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            cmake ninja-build g++ libeigen3-dev libssl-dev libzip-dev \
+            libgtest-dev
+        env:
+          DEBIAN_FRONTEND: noninteractive
+
+      - name: Fetch the Ouster SDK provider and its sensor captures
+        run: |
+          git init -q ouster-sdk
+          git -C ouster-sdk remote add origin \
+            https://github.com/ouster-lidar/ouster-sdk.git
+          git -C ouster-sdk fetch -q --depth 1 origin "${OUSTER_SDK_REF}"
+          git -C ouster-sdk checkout -q FETCH_HEAD
+
+      - name: Configure
+        run: |
+          cmake -S test/standalone -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
+            -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.linker_flags }}" \
+            -DOUSTER_SDK_SOURCE_DIR="${PWD}/ouster-sdk" \
+            -DOUSTER_SIM_CORE_SDK_TEST_DATA_DIR="${PWD}/ouster-sdk/tests"
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: |
+          ctest --test-dir build/core --output-on-failure \
+            --output-junit "${PWD}/ctest-results.xml"
+          # Guard against a configuration that silently discovers no tests.
+          test "$(ctest --test-dir build/core -N | sed -n 's/^Total Tests: //p')" -gt 0
+
+      - name: Encoder throughput (informational)
+        if: matrix.build_type == 'Release'
+        run: build/core/ouster_sim_core_bench_packet_encoder

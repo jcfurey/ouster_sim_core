@@ -6,7 +6,9 @@
 #include <ouster/impl/packet_writer.h>
 #include <ouster/types.h>
 
+#include <algorithm>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -59,6 +61,54 @@ void validateFrame(
     }
 }
 
+// Legacy packets carry a 90112-count angle encoder per column.
+constexpr std::uint32_t kLegacyEncoderTicksPerRevolution = 90112;
+constexpr std::uint32_t kLegacyValidColumnStatus = 0xffffffffu;
+constexpr std::size_t kLegacyColumnFrameIdOffset = 10;
+constexpr std::size_t kLegacyColumnEncoderOffset = 12;
+
+void writeLittleEndian(std::uint8_t * output, std::uint64_t value,
+                       std::size_t bytes)
+{
+    for (std::size_t index = 0; index < bytes; ++index) {
+        output[index] = static_cast<std::uint8_t>(value >> (index * 8u));
+    }
+}
+
+template <typename T>
+bool fieldNeedsSaturation(
+    const ouster::sdk::core::impl::PacketWriter & writer,
+    const std::string & field)
+{
+    if (writer.field_type(field) == ouster::sdk::core::ChanFieldType::VOID) {
+        return false;
+    }
+    return writer.field_value_mask(field) <
+        static_cast<std::uint64_t>(std::numeric_limits<T>::max());
+}
+
+/// Return a block source that the SDK writer cannot wrap modulo its width.
+///
+/// Narrow packet fields such as the low-data NIR8 slot store a shifted subset
+/// of the source bits. The SDK writer masks, so an out-of-range value would
+/// alias to an unrelated dim value; a physical channel saturates instead.
+template <typename T>
+const T * saturatedBlock(
+    const ouster::sdk::core::impl::PacketWriter & writer,
+    const std::string & field,
+    std::span<const T> source,
+    std::vector<T> & scratch)
+{
+    if (!fieldNeedsSaturation<T>(writer, field)) {
+        return source.data();
+    }
+    const auto maximum = static_cast<T>(writer.field_value_mask(field));
+    scratch.resize(source.size());
+    std::transform(source.begin(), source.end(), scratch.begin(),
+                   [maximum](T value) { return std::min(value, maximum); });
+    return scratch.data();
+}
+
 }  // namespace
 
 OusterPacketEncoder::OusterPacketEncoder(OusterMetadata metadata)
@@ -98,14 +148,39 @@ void OusterPacketEncoder::encode(
     const auto & writer = metadata_.packetWriter();
     const auto width = metadata_.columnsPerFrame();
     const auto columns_per_packet = metadata_.columnsPerPacket();
-    const auto packet_count = width / columns_per_packet;
+    const auto frame_packet_count = width / columns_per_packet;
     const std::uint32_t packet_frame_id =
         metadata_.packetFrameId(frame.revolution);
+    const bool legacy =
+        writer.udp_profile_lidar == ouster::sdk::core::UDPProfileLidar::LEGACY;
+    const std::uint32_t legacy_encoder_ticks_per_column =
+        kLegacyEncoderTicksPerRevolution / width;
+    const std::uint32_t valid_column_status =
+        legacy ? kLegacyValidColumnStatus : 0x01u;
 
-    packets.resize(packet_count);
+    std::vector<std::uint16_t> signal_scratch;
+    std::vector<std::uint8_t> reflectivity_scratch;
+    std::vector<std::uint16_t> near_ir_scratch;
+    const auto * signal = saturatedBlock(
+        writer, ouster::sdk::core::ChanField::SIGNAL, frame.signal,
+        signal_scratch);
+    const auto * reflectivity = saturatedBlock(
+        writer, ouster::sdk::core::ChanField::REFLECTIVITY, frame.reflectivity,
+        reflectivity_scratch);
+    const auto * near_ir = saturatedBlock(
+        writer, ouster::sdk::core::ChanField::NEAR_IR, frame.near_ir,
+        near_ir_scratch);
+
+    // A sensor omits packets wholly outside its column window, so the output
+    // holds only metadata.lidarPacketsPerFrame() packets.
+    packets.resize(metadata_.lidarPacketsPerFrame());
+    std::size_t output_index = 0;
     for (std::uint32_t packet_index = 0;
-         packet_index < packet_count; ++packet_index) {
-        auto & packet = packets[packet_index];
+         packet_index < frame_packet_count; ++packet_index) {
+        if (!metadata_.isPacketInWindow(packet_index)) {
+            continue;
+        }
+        auto & packet = packets[output_index++];
         packet.revolution = frame.revolution;
         packet.frame_id = packet_frame_id;
         packet.first_measurement_id = static_cast<std::uint16_t>(
@@ -133,7 +208,25 @@ void OusterPacketEncoder::encode(
             writer.set_col_timestamp(
                 column, frame.column_timestamp_ns[measurement]);
             writer.set_col_measurement_id(column, measurement);
-            writer.set_col_status(column, 0x01u);
+            // Out-of-window columns keep their identity and timestamp but are
+            // invalid; the SDK writer leaves their channel data zeroed.
+            writer.set_col_status(
+                column,
+                metadata_.isColumnInWindow(measurement)
+                    ? valid_column_status
+                    : 0u);
+            if (legacy) {
+                // Legacy sensors repeat the frame ID in every column header
+                // and report the angle encoder; the SDK writer sets only the
+                // first column's frame ID.
+                writeLittleEndian(
+                    column + kLegacyColumnFrameIdOffset, packet_frame_id, 2);
+                writeLittleEndian(
+                    column + kLegacyColumnEncoderOffset,
+                    static_cast<std::uint64_t>(measurement) *
+                        legacy_encoder_ticks_per_column,
+                    4);
+            }
         }
 
         writer.set_block<std::uint32_t>(
@@ -142,24 +235,23 @@ void OusterPacketEncoder::encode(
         if (writer.field_type(ouster::sdk::core::ChanField::SIGNAL) !=
             ouster::sdk::core::ChanFieldType::VOID) {
             writer.set_block<std::uint16_t>(
-                frame.signal.data(), static_cast<int>(width),
+                signal, static_cast<int>(width),
                 ouster::sdk::core::ChanField::SIGNAL, data);
         }
         if (writer.field_type(ouster::sdk::core::ChanField::REFLECTIVITY) !=
             ouster::sdk::core::ChanFieldType::VOID) {
             writer.set_block<std::uint8_t>(
-                frame.reflectivity.data(), static_cast<int>(width),
+                reflectivity, static_cast<int>(width),
                 ouster::sdk::core::ChanField::REFLECTIVITY, data);
         }
         if (writer.field_type(ouster::sdk::core::ChanField::NEAR_IR) !=
             ouster::sdk::core::ChanFieldType::VOID) {
             writer.set_block<std::uint16_t>(
-                frame.near_ir.data(), static_cast<int>(width),
+                near_ir, static_cast<int>(width),
                 ouster::sdk::core::ChanField::NEAR_IR, data);
         }
 
-        if (writer.udp_profile_lidar !=
-                ouster::sdk::core::UDPProfileLidar::LEGACY &&
+        if (!legacy &&
             writer.header_type == ouster::sdk::core::HeaderType::STANDARD) {
             const std::uint64_t crc =
                 writer.calculate_crc(data, packet.bytes.size());
