@@ -197,6 +197,32 @@ TEST(OusterImuPacketPipeline, ModernPacketCarriesNativeHeaderSamplesAndCrc)
     }
 }
 
+TEST(OusterImuPacketPipeline, UnencodablePacketIsDroppedWithoutStallingTheStream)
+{
+    const auto metadata = OusterMetadata::fromJson(modernMetadataJson());
+    OusterImuPacketPipeline pipeline(metadata, 100ms, 7, 1);
+    const auto period = pipeline.contract().sample_period.count();
+    ASSERT_EQ(pipeline.contract().measurements_per_packet, 8u);
+
+    // Finite but beyond float range: the first packet cannot be encoded.
+    OusterImuState spike{1'000'000};
+    spike.linear_acceleration_mps2 = {1e39, 0.0, 0.0};
+    ASSERT_TRUE(pipeline.ingest(spike).empty());
+    OusterImuState settled{1'000'000 + 7 * period};
+    EXPECT_THROW(pipeline.ingest(settled), std::overflow_error);
+
+    // The failed packet's samples are discarded; the next packet is complete.
+    OusterImuState next{1'000'000 + 15 * period};
+    next.linear_acceleration_mps2 = {0.0, 0.0, kGravity};
+    const auto encoded = pipeline.ingest(next);
+    ASSERT_EQ(encoded.size(), 1u);
+    EXPECT_EQ(encoded[0].first_sample_timestamp_ns,
+              static_cast<std::uint64_t>(1'000'000 + 8 * period));
+    const auto packet = decode(metadata, encoded[0]);
+    EXPECT_TRUE(packet.accel().allFinite());
+    EXPECT_LE(packet.accel().abs().maxCoeff(), kGravity + 1e-4);
+}
+
 TEST(OusterImuPacketPipeline, ResetRestartsPacketIdentityAndTimeDomain)
 {
     const auto metadata = OusterMetadata::fromFile(metadataPath());
