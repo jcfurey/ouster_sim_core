@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "ouster_sim_core/signal_response.hpp"
+
 #include <string>
 
 namespace ouster_sim_core {
@@ -88,6 +90,10 @@ struct OusterProductProfile {
     // Detection ranges are specified at this column rate. Active-mode range
     // and precision scale relative to this reference rate.
     double reference_columns_per_second = 10240.0;
+
+    // SIGNAL response measured on recordings of this product. Empty where
+    // none calibrate it; channel models then keep the inverse-square model.
+    OusterSignalResponse signal_response;
 };
 
 struct OusterProductProfileRequest {

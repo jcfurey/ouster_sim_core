@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ouster_sim_core VERSION 0.5.0 LANGUAGES CXX)
+project(ouster_sim_core VERSION 0.6.0 LANGUAGES CXX)
 
 if(NOT DEFINED CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 20)
@@ -27,7 +27,8 @@ add_library(ouster_sim_core STATIC
   src/packet_encoder.cpp
   src/packet_pacing.cpp
   src/product_profile.cpp
-  src/revolution_assembler.cpp)
+  src/revolution_assembler.cpp
+  src/signal_response.cpp)
 add_library(ouster_sim_core::ouster_sim_core ALIAS ouster_sim_core)
 
 set_target_properties(ouster_sim_core PROPERTIES

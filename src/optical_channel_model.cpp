@@ -156,6 +156,12 @@ void validateConfig(const OpticalChannelModelConfig & config)
     requireFiniteNonnegative(
         config.detection.rolloff_fraction,
         "detection rolloff_fraction");
+    validateSignalResponse(config.signal_response);
+    if (!std::isfinite(config.signal_mode_gain) ||
+        config.signal_mode_gain <= 0.0) {
+        throw std::invalid_argument(
+            "signal_mode_gain must be finite and greater than zero");
+    }
 }
 
 void validateInput(const NormalizedOpticalReturn & input)
@@ -591,6 +597,9 @@ OpticalChannelModelConfig opticalChannelModelConfigFromProfile(
             ? config.detection.range_10_d90_m
             : config.maximum_range_m;
     config.false_alarm_rate = profile.false_positive_rate;
+    config.signal_response = profile.signal_response;
+    config.signal_mode_gain = signalModeGain(
+        profile.signal_response, columns_per_frame, lidar_hz);
 
     // Run the same validation as direct construction before exposing the
     // derived values to an embedding package.
@@ -701,16 +710,30 @@ QuantizedOpticalReturn OpticalChannelModel::processScalar(
 
     const double reflectance_for_signal = input.apparent_reflectance.value_or(
         config_.missing_reflectance_for_signal);
-    double signal = nonnegativeProductOverSquaredDenominator(
-        config_.base_signal,
-        reflectance_for_signal,
-        input.path_length_m);
+    double signal = 0.0;
+    double signal_sigma = 0.0;
+    if (config_.signal_response.measured()) {
+        const auto estimate = evaluateSignalResponse(
+            config_.signal_response,
+            reflectance_for_signal,
+            input.path_length_m,
+            config_.base_signal / kReferenceBaseSignal,
+            config_.signal_mode_gain);
+        signal = estimate.mean;
+        signal_sigma = estimate.sigma;
+    } else {
+        signal = nonnegativeProductOverSquaredDenominator(
+            config_.base_signal,
+            reflectance_for_signal,
+            input.path_length_m);
+        signal_sigma = std::sqrt(std::max(signal, 0.0));
+    }
     if (config_.signal_noise_scale > 0.0 && std::isfinite(signal)) {
         signal = std::max(
             signal + deterministicOpticalStandardNormal(
                 context.seed,
                 randomKey(input, context, OpticalRandomEffect::kSignalNoise)) *
-                std::sqrt(std::max(signal, 0.0)) *
+                signal_sigma *
                 config_.signal_noise_scale,
             0.0);
     }

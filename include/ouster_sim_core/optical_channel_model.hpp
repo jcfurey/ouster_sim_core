@@ -5,6 +5,7 @@
 
 #include "ouster_sim_core/firing_table.hpp"
 #include "ouster_sim_core/return_sample.hpp"
+#include "ouster_sim_core/signal_response.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -16,7 +17,7 @@ namespace ouster_sim_core {
 /// Version of the normalized optical contract and its deterministic random
 /// mapping. Increment this value whenever a change adds to or intentionally
 /// invalidates the frozen random or synthesized-channel golden vectors.
-inline constexpr std::uint32_t kOpticalChannelContractVersion = 2;
+inline constexpr std::uint32_t kOpticalChannelContractVersion = 3;
 
 /// Standalone Gazebo Ouster edge policy adopted by the shared reference.
 ///
@@ -199,12 +200,20 @@ struct OpticalChannelModelConfig {
         kReferenceEdgeSuppressionProbability;
 
     OpticalDetectionParameters detection;
+
+    /// Measured SIGNAL response of the product. Empty, the default, keeps the
+    /// inverse-square base_signal * reflectance / path_length^2 with Poisson
+    /// noise; a measured response scales by base_signal / kReferenceBaseSignal.
+    OusterSignalResponse signal_response;
+    /// Shots per measurement relative to signal_response's recordings.
+    double signal_mode_gain = 1.0;
 };
 
 struct OusterProductProfile;
 
-/// Derive range, detection, precision-noise, and false-alarm defaults from a
-/// supported physical product profile at the active measurement-column rate.
+/// Derive range, detection, precision-noise, false-alarm, and SIGNAL-response
+/// defaults from a supported physical product profile at the active
+/// measurement-column rate.
 OpticalChannelModelConfig opticalChannelModelConfigFromProfile(
     const OusterProductProfile & profile,
     int columns_per_frame,
@@ -213,13 +222,14 @@ OpticalChannelModelConfig opticalChannelModelConfigFromProfile(
 /// Stateless simulator-neutral Ouster channel model.
 ///
 /// The scalar equations intentionally retain the established Gazebo model's
-/// inverse-square signal, reflectivity encoding, detection calibration,
-/// range quantization, and shot-noise approximations. Randomness is replaced
-/// by a counter-keyed generator so output is invariant to call order and batch
-/// segmentation. The object is immutable after validated construction and is
-/// safe to invoke concurrently. Spatial edge suppression is derived only by
-/// `processRevolution()` from a canonical raw-frame neighborhood; adapters
-/// cannot inject their own edge flags.
+/// reflectivity encoding, detection calibration, range quantization, and
+/// signal model: a measured product response where the profile has one,
+/// otherwise the inverse-square signal with Poisson noise. Randomness is
+/// replaced by a counter-keyed generator so output is invariant to call order
+/// and batch segmentation. The object is immutable after validated
+/// construction and is safe to invoke concurrently. Spatial edge suppression
+/// is derived only by `processRevolution()` from a canonical raw-frame
+/// neighborhood; adapters cannot inject their own edge flags.
 class OpticalChannelModel {
 public:
     explicit OpticalChannelModel(OpticalChannelModelConfig config);

@@ -130,6 +130,16 @@ They may differ even for a direct return when the simulator casts from the
 translated beam origin but Ouster's packet convention reports the
 lidar-origin-equivalent range; transmitted and ghost paths may separate them
 further.
+
+Rev7 OS0 and OS1 profiles carry a measured SIGNAL response
+(`signal_response.hpp`) fitted to Ouster's public sample recordings: the linear
+signal of a 100% diffuse target against range, the L3 detector's saturation
+near 5,700, and shot noise with a 1.34 excess factor plus a 0.8% relative floor.
+`opticalChannelModelConfigFromProfile()` copies it with the active mode's
+shots-per-measurement gain, and the channel model scales it by
+`base_signal / kReferenceBaseSignal`. Products without recordings keep the
+inverse-square `base_signal * reflectance / path_length^2` with Poisson noise.
+
 The integer mixer and open-interval uniform mapping are bit-exact contract
 surfaces. Gaussian and noisy-channel goldens are frozen for the supported
 toolchain; different `libm` implementations are compared with documented

@@ -6,10 +6,63 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <initializer_list>
 #include <string>
+#include <utility>
 
 namespace ouster_sim_core {
 namespace {
+
+// SIGNAL responses fitted to Ouster's public sample recordings (Ouster
+// Studio, CC BY-NC-SA 4.0): an OS1-128 Rev7 on firmware 3.0.1 at 1024x10 and
+// 2048x10, a second OS1-128 Rev7 on 3.2.0 at 2048x10, and an OS0-128 Rev7 on
+// 3.0.1 at 1024x10. Each range bin's response comes from the median SIGNAL
+// of returns whose calibrated reflectivity is 15-100; the two OS1 units are
+// combined as a geometric mean (they differ by up to 40% between 5 and 8 m,
+// under 10% beyond 17 m). Both models saturate alike, at the 5737 and 5749
+// largest SIGNAL of their recordings, and per-pixel noise over stationary
+// stretches agrees across units, firmware and modes.
+OusterSignalResponse rev7SignalResponse(
+    std::initializer_list<std::pair<double, double>> knots)
+{
+    OusterSignalResponse response;
+    for (const auto & [range_m, signal_m2] : knots) {
+        response.range_m[response.knot_count] = range_m;
+        response.signal_m2[response.knot_count] = signal_m2;
+        ++response.knot_count;
+    }
+    response.columns_per_second = 10240.0;
+    response.saturation_signal = 5680.0;
+    response.shot_noise_factor = 1.337;
+    response.relative_noise = 0.0077;
+    return response;
+}
+
+// The overlap of the transmitted beam and the receiver's view completes near
+// 20 m; below about 4 m a near-constant 3-4% of it remains.
+OusterSignalResponse rev7Os1SignalResponse()
+{
+    return rev7SignalResponse({
+        {2.3, 1.08e5}, {2.9, 9.80e4}, {3.5, 8.05e4}, {4.1, 8.68e4},
+        {5.0, 1.52e5}, {6.0, 3.14e5}, {7.1, 6.18e5}, {8.7, 1.19e6},
+        {10.2, 1.57e6}, {12.0, 1.85e6}, {14.5, 2.18e6}, {17.6, 2.45e6},
+        {21.0, 2.62e6}, {25.2, 2.66e6}, {30.5, 2.63e6}, {36.3, 2.66e6},
+        {43.8, 2.68e6}, {52.4, 2.58e6}, {63.2, 2.44e6}, {75.0, 2.33e6},
+        {91.0, 2.19e6}, {108.0, 1.97e6},
+    });
+}
+
+// The wide-field OS0 collects about a ninth of the OS1's far-field signal and
+// reaches full overlap near 7 m; from 1 to 3.5 m a target returns roughly the
+// same signal at any range.
+OusterSignalResponse rev7Os0SignalResponse()
+{
+    return rev7SignalResponse({
+        {1.0, 1.45e4}, {1.21, 2.69e4}, {2.97, 1.33e5}, {3.47, 1.58e5},
+        {4.08, 1.98e5}, {4.88, 2.46e5}, {5.88, 2.79e5}, {7.09, 3.00e5},
+        {21.1, 2.96e5}, {43.8, 3.04e5}, {62.4, 2.78e5},
+    });
+}
 
 std::string canonical(const std::string & value)
 {
@@ -180,6 +233,7 @@ void setRev7Physics(OusterProductProfile & profile)
         profile.precision_max_std_m = 0.040;
         profile.beam_diameter_m = 0.005;
         profile.beam_divergence_fwhm_deg = 0.35;
+        profile.signal_response = rev7Os0SignalResponse();
         break;
     case OusterModel::OS1:
         profile.detection_range_10_d90_m = 90.0;
@@ -189,6 +243,7 @@ void setRev7Physics(OusterProductProfile & profile)
         profile.precision_max_std_m = 0.030;
         profile.beam_diameter_m = 0.0095;
         profile.beam_divergence_fwhm_deg = 0.18;
+        profile.signal_response = rev7Os1SignalResponse();
         break;
     case OusterModel::OS2:
         profile.detection_range_10_d90_m = 200.0;
