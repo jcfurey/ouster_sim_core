@@ -17,7 +17,7 @@ namespace ouster_sim_core {
 /// Version of the normalized optical contract and its deterministic random
 /// mapping. Increment this value whenever a change adds to or intentionally
 /// invalidates the frozen random or synthesized-channel golden vectors.
-inline constexpr std::uint32_t kOpticalChannelContractVersion = 3;
+inline constexpr std::uint32_t kOpticalChannelContractVersion = 4;
 
 /// Standalone Gazebo Ouster edge policy adopted by the shared reference.
 ///
@@ -167,7 +167,8 @@ double calibratedDetectionProbability(
     double max_range_m) noexcept;
 
 /// Ouster reflectivity encoding: [0,1] maps linearly to [0,100], then a
-/// logarithmic retroreflective band extends to 255.
+/// logarithmic retroreflective band reaches 255 at 864 times a 100% diffuse
+/// target, as Ouster's calibrated reflectivity scale documents.
 std::uint8_t quantizeOusterReflectivity(double apparent_reflectance) noexcept;
 
 /// Scalar channel-model calibration independent of any simulator SDK.

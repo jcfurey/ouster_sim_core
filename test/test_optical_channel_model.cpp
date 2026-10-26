@@ -145,10 +145,11 @@ TEST(OpticalChannelModel, DocumentedNoiselessGoldenVectors)
     retro.apparent_reflectance = 2.0;
     retro.ambient_near_ir_factor = 0.0;
     const auto retro_output = model.process(retro, context);
-    // 100 + log2(2)*22 is the first retroreflective-band anchor.
+    // 100 + log2(2) * 155/log2(864) = 115.9: one doubling into the
+    // retroreflective band.
     EXPECT_EQ(retro_output.range_mm, 4'000u);
     EXPECT_EQ(retro_output.signal, 100u);
-    EXPECT_EQ(retro_output.reflectivity, 122u);
+    EXPECT_EQ(retro_output.reflectivity, 115u);
     EXPECT_EQ(retro_output.near_ir, 0u);
 
     auto saturated = surface(3, 0, 0.5);
@@ -165,6 +166,24 @@ TEST(OpticalChannelModel, DocumentedNoiselessGoldenVectors)
     EXPECT_EQ(
         saturated_output.near_ir,
         std::numeric_limits<std::uint16_t>::max());
+}
+
+TEST(OpticalChannelModel, ReflectivityReaches255At864TimesDiffuse)
+{
+    using ouster_sim_core::quantizeOusterReflectivity;
+    // Ouster's calibrated scale: 100 is a 100% diffuse target and 255 is
+    // 864 times one, so each doubling adds 155 / log2(864) = 15.9.
+    EXPECT_EQ(quantizeOusterReflectivity(1.0), 100u);
+    EXPECT_EQ(quantizeOusterReflectivity(4.0), 131u);
+    EXPECT_EQ(quantizeOusterReflectivity(64.0), 195u);
+    EXPECT_EQ(quantizeOusterReflectivity(850.0), 254u);
+    EXPECT_EQ(quantizeOusterReflectivity(870.0), 255u);
+    std::uint8_t previous = 0;
+    for (double reflectance = 0.5; reflectance < 2'000.0; reflectance *= 1.01) {
+        const auto byte = quantizeOusterReflectivity(reflectance);
+        EXPECT_GE(byte, previous) << reflectance;
+        previous = byte;
+    }
 }
 
 TEST(OpticalChannelModel, BlackIsDifferentFromMissingReflectance)
@@ -543,7 +562,7 @@ TEST(OpticalChannelModel, MeasuredSignalResponseIsValidated)
 
 TEST(OpticalChannelModel, VersionedMeasuredSignalGoldenVector)
 {
-    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 3);
+    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 4);
     OpticalChannelModelConfig config;
     config.signal_response = handCheckedResponse();
     config.signal_mode_gain = 0.5;
@@ -599,7 +618,7 @@ TEST(OpticalChannelModel, MeasuredSignalNoiseHasTheModelledSpread)
 
 TEST(OpticalChannelModel, CounterRngHasStableGoldenWordAndIndependentLanes)
 {
-    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 3);
+    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 4);
     OpticalRandomKey key;
     key.sensor_stream_id = 0x1020304050607080ULL;
     key.epoch = 3;
@@ -734,7 +753,7 @@ TEST(OpticalChannelModel, CompleteRevolutionUsesGazeboCardinalTopology)
 
 TEST(OpticalChannelModel, VersionedEdgeSuppressionGoldenVector)
 {
-    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 3);
+    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 4);
     const auto table = makeFrameTable();
     auto inputs = makeFrame(*table, 7);
     inputs[4].path_length_m = 10.0;
@@ -855,7 +874,7 @@ TEST(OpticalChannelModel, CompleteRevolutionRejectsBrokenCoverage)
 
 TEST(OpticalChannelModel, VersionedNoisyChannelGoldenVector)
 {
-    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 3);
+    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 4);
     OpticalChannelModelConfig config;
     config.range_resolution_m = 0.001;
     config.range_noise_min_std_m = 0.01;

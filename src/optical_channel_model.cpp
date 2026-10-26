@@ -19,7 +19,9 @@ constexpr double kMinimumSignalDenominator = 0.0001;
 constexpr double kRangeFractionDenominatorFloor = 0.1;
 constexpr double kLambertianByteMaximum = 100.0;
 constexpr double kReflectivityByteMaximum = 255.0;
-constexpr double kRetroreflectiveLogSlope = 22.0;
+// Ouster's calibrated scale puts byte 255 at 864 times a 100% diffuse
+// target: (255 - 100) / log2(864) bytes per doubling.
+constexpr double kRetroreflectiveLogSlope = 15.889470787400022;
 constexpr double kDropoutReflectanceFloor = 0.33;
 constexpr double kDropoutReflectanceScaleMaximum = 3.0;
 constexpr double kRangeNoiseReflectanceFloor = 0.25;

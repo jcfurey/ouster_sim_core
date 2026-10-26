@@ -140,6 +140,11 @@ shots-per-measurement gain, and the channel model scales it by
 `base_signal / kReferenceBaseSignal`. Products without recordings keep the
 inverse-square `base_signal * reflectance / path_length^2` with Poisson noise.
 
+Reflectivity follows Ouster's calibrated scale (`quantizeOusterReflectivity()`):
+apparent reflectance 0-1 maps linearly to bytes 0-100, and a log2 band for
+retroreflectors reaches 255 at 864 times a 100% diffuse target, about 15.9
+bytes per doubling.
+
 The integer mixer and open-interval uniform mapping are bit-exact contract
 surfaces. Gaussian and noisy-channel goldens are frozen for the supported
 toolchain; different `libm` implementations are compared with documented
