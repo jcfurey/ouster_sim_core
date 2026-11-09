@@ -562,7 +562,7 @@ TEST(OpticalChannelModel, MeasuredSignalResponseIsValidated)
 
 TEST(OpticalChannelModel, VersionedMeasuredSignalGoldenVector)
 {
-    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 4);
+    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 5);
     OpticalChannelModelConfig config;
     config.signal_response = handCheckedResponse();
     config.signal_mode_gain = 0.5;
@@ -618,7 +618,7 @@ TEST(OpticalChannelModel, MeasuredSignalNoiseHasTheModelledSpread)
 
 TEST(OpticalChannelModel, CounterRngHasStableGoldenWordAndIndependentLanes)
 {
-    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 4);
+    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 5);
     OpticalRandomKey key;
     key.sensor_stream_id = 0x1020304050607080ULL;
     key.epoch = 3;
@@ -753,7 +753,7 @@ TEST(OpticalChannelModel, CompleteRevolutionUsesGazeboCardinalTopology)
 
 TEST(OpticalChannelModel, VersionedEdgeSuppressionGoldenVector)
 {
-    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 4);
+    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 5);
     const auto table = makeFrameTable();
     auto inputs = makeFrame(*table, 7);
     inputs[4].path_length_m = 10.0;
@@ -835,6 +835,41 @@ TEST(OpticalChannelModel, GazeboReferenceTopologyDoesNotWrapAzimuthSeam)
     EXPECT_TRUE(output[3].hasReturn());
 }
 
+TEST(OpticalChannelModel, MediumReturnsAreNotDepthEdges)
+{
+    const auto table = makeFrameTable();
+    OpticalChannelModelConfig config;
+    config.edge_discontinuity_threshold_m = 5.0;
+    config.edge_suppression_probability = 1.0;  // every edge drops; no draw
+    const OpticalChannelModel model(config);
+    const auto kept = [&](const std::vector<NormalizedOpticalReturn> & inputs) {
+        std::set<std::size_t> indices;
+        const auto output = model.processRevolution(inputs, *table, {});
+        for (std::size_t index = 0; index < output.size(); ++index) {
+            if (output[index].hasReturn()) {
+                indices.insert(index);
+            }
+        }
+        return indices;
+    };
+
+    // A surface 10 m nearer than the wall around it: it and its four
+    // cardinal neighbors are on a depth edge.
+    auto inputs = makeFrame(*table, 7);
+    inputs[4].path_length_m = inputs[4].reported_range_m = 10.0;
+    EXPECT_EQ(kept(inputs), (std::set<std::size_t>{0, 2, 6, 8, 9, 10, 11}));
+
+    // The same range returned by smoke in front of the wall is no edge: its
+    // range is scattered through the medium, not stepped by a surface.
+    inputs[4].return_kind = OpticalReturnKind::kMedium;
+    inputs[4].geometric_hit = false;
+    EXPECT_EQ(kept(inputs).size(), inputs.size());
+
+    // Surfaces beside it still edge against each other.
+    inputs[7].path_length_m = inputs[7].reported_range_m = 10.0;
+    EXPECT_EQ(kept(inputs), (std::set<std::size_t>{0, 1, 2, 3, 4, 5, 9, 11}));
+}
+
 TEST(OpticalChannelModel, CompleteRevolutionRejectsBrokenCoverage)
 {
     const auto table = makeFrameTable();
@@ -874,7 +909,7 @@ TEST(OpticalChannelModel, CompleteRevolutionRejectsBrokenCoverage)
 
 TEST(OpticalChannelModel, VersionedNoisyChannelGoldenVector)
 {
-    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 4);
+    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 5);
     OpticalChannelModelConfig config;
     config.range_resolution_m = 0.001;
     config.range_noise_min_std_m = 0.01;

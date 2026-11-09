@@ -398,12 +398,23 @@ bool hasGazeboReferenceEdge(
     const auto height = firing_table.channelCount();
     const double range_m = input.reported_range_m;
 
+    // A return from a participating medium (smoke, dust, fog) has its range
+    // drawn per firing from the medium's received-power profile. That scatter
+    // is not a surface edge: such a return is never on an edge, and as a
+    // neighbor it says nothing about the surfaces around it.
+    if (input.return_kind == OpticalReturnKind::kMedium) {
+        return false;
+    }
+
     const auto discontinuous = [&](std::uint32_t neighbor_measurement,
                                    std::uint16_t neighbor_ring) {
         const std::size_t index =
             static_cast<std::size_t>(neighbor_measurement) * height +
             neighbor_ring;
         const auto & neighbor = *canonical[index];
+        if (neighbor.return_kind == OpticalReturnKind::kMedium) {
+            return false;
+        }
         return !neighbor.hasReturn() ||
                neighbor.reported_range_m < kGazeboValidDepthMinimumM ||
                std::fabs(neighbor.reported_range_m - range_m) > threshold_m;

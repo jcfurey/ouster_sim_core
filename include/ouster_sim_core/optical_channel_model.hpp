@@ -17,7 +17,7 @@ namespace ouster_sim_core {
 /// Version of the normalized optical contract and its deterministic random
 /// mapping. Increment this value whenever a change adds to or intentionally
 /// invalidates the frozen random or synthesized-channel golden vectors.
-inline constexpr std::uint32_t kOpticalChannelContractVersion = 4;
+inline constexpr std::uint32_t kOpticalChannelContractVersion = 5;
 
 /// Standalone Gazebo Ouster edge policy adopted by the shared reference.
 ///
@@ -262,7 +262,9 @@ public:
     /// Edge detection follows the standalone Gazebo reference: compare the
     /// raw reported range against existing cardinal neighbors, do not wrap the
     /// azimuth seam, treat a neighboring miss as a discontinuity, and apply
-    /// the edge gate before dropout and channel noise.
+    /// the edge gate before dropout and channel noise. A kMedium return is
+    /// neither on an edge nor evidence of one for its neighbors: its range
+    /// is scattered through the medium, not stepped by a surface.
     std::vector<QuantizedOpticalReturn> processRevolution(
         std::span<const NormalizedOpticalReturn> inputs,
         const OusterFiringTable & firing_table,

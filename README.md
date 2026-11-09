@@ -158,7 +158,10 @@ returns canonical measurement-major output. Its edge topology intentionally
 matches standalone `gz_sensors_ouster`: existing cardinal neighbors only,
 no first/last-column wrap, a neighboring miss or raw reported-range jump above
 the configured threshold marks an edge, and the 50% edge gate precedes normal
-dropout and channel noise. The shared contract uses the firing-keyed
+dropout and channel noise. A return of kind `kMedium` (smoke, dust, fog) is
+outside that topology: it is never on an edge, and a medium neighbor does not
+put a surface return on one, since its range is scattered per firing by the
+medium rather than set by geometry. The shared contract uses the firing-keyed
 `kEdgeSuppression` random lane instead of Gazebo's mutable backend generator,
 which makes output independent of worker completion and input ordering. Scalar
 processing rejects calls when edge suppression is enabled so an embedding

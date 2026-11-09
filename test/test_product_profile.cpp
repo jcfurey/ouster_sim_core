@@ -203,10 +203,28 @@ TEST(OusterProductProfile, MarksAmbiguousAndInvalidRevisionsAsFallback)
     EXPECT_EQ(ambiguous.revision, OusterRevision::Rev06);
     EXPECT_TRUE(ambiguous.fallback_revision);
 
-    request.hardware_revision = "definitely-not-a-revision";
-    const auto invalid = resolveOusterProductProfile(request);
-    EXPECT_EQ(invalid.revision, OusterRevision::Rev06);
-    EXPECT_TRUE(invalid.fallback_revision);
+    // A revision the caller named but the catalog does not know is refused,
+    // also where the part number or firmware would have settled it: running
+    // another revision would look like the one asked for.
+    for (const char * typo : {"definitely-not-a-revision", "rev7.0", "gen2"}) {
+        request.hardware_revision = typo;
+        const auto invalid = resolveOusterProductProfile(request);
+        EXPECT_TRUE(invalid.unrecognized_revision) << typo;
+        EXPECT_FALSE(invalid.supported) << typo;
+        EXPECT_FALSE(invalid.fallback_revision) << typo;
+        EXPECT_EQ(invalid.revision, OusterRevision::Unknown) << typo;
+    }
+    request.product_line = "OS1-64";
+    request.product_part_number = "840-102145-D";
+    request.hardware_revision = "rev7.0";
+    const auto inferable = resolveOusterProductProfile(request);
+    EXPECT_TRUE(inferable.unrecognized_revision);
+    EXPECT_FALSE(inferable.supported);
+    request.hardware_revision = "auto";
+    const auto inferred = resolveOusterProductProfile(request);
+    EXPECT_FALSE(inferred.unrecognized_revision);
+    EXPECT_TRUE(inferred.supported);
+    EXPECT_EQ(inferred.revision, OusterRevision::RevD);
 }
 
 TEST(OusterProductProfile, FirmwareAndPacketProfileAffectResolution)

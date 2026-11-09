@@ -7,6 +7,23 @@ synthesized channel output, packet output or the optical contract changes, and
 ``kOpticalChannelContractVersion`` moves with any change to the frozen random or channel golden
 vectors. Parents pin a commit; each entry lists what reached them under that version.
 
+0.8.0 (2026-11-09)
+------------------
+* [BREAKING]: A return of kind ``kMedium`` is no longer a depth edge. ``processRevolution()``
+  never suppresses one, and a medium neighbor no longer puts a surface return on an edge. A
+  medium return's range is drawn per firing from the medium's received-power profile, so
+  neighboring returns from one cloud usually differ by more than the edge threshold. With edge
+  suppression on, the 50% edge gate then removed about half of them, and half of the surface
+  returns seen beside them. Surface edges, including a surface beside a miss, are unchanged,
+  and so are the ``conformance_v1`` fixtures. ``kOpticalChannelContractVersion`` is 5.
+* [BREAKING]: A hardware revision the catalog does not recognize (``rev7.0``, ``gen2``) no
+  longer resolves to another revision. ``resolveOusterProductProfile()`` returns a profile with
+  the new ``unrecognized_revision`` set, ``supported`` false and an id ending in
+  ``-unrecognized``. It used to take the revision inferred from the part number, or the model's
+  fallback, and report ``supported``; a typo then ran different physics from the one asked for
+  without any sign. ``auto`` and the empty string still infer. A parent that passes
+  user-supplied revision strings should check the flag and reject the request.
+
 0.7.0 (2026-10-26)
 ------------------
 * [BREAKING]: Retroreflectors encode on Ouster's calibrated reflectivity scale, where byte 255 is

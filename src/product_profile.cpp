@@ -438,8 +438,12 @@ OusterProductProfile resolveOusterProductProfile(
 
     const OusterRevision requested =
         parseOusterRevision(request.hardware_revision);
-    if (requested != OusterRevision::Auto &&
-        requested != OusterRevision::Unknown) {
+    if (requested == OusterRevision::Unknown) {
+        profile.unrecognized_revision = true;
+        profile.id = std::string(toString(profile.model)) + "-unrecognized";
+        return profile;
+    }
+    if (requested != OusterRevision::Auto) {
         profile.revision = requested;
     } else {
         profile.revision =
@@ -477,8 +481,7 @@ OusterProductProfile resolveOusterProductProfile(
         }
     }
 
-    if (profile.revision == OusterRevision::Unknown ||
-        requested == OusterRevision::Unknown) {
+    if (profile.revision == OusterRevision::Unknown) {
         profile.revision = fallbackRevision(profile.model);
         profile.fallback_revision = true;
     }
