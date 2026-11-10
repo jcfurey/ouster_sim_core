@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "ouster_sim_core/signal_response.hpp"
+
 #include <string>
 
 namespace ouster_sim_core {
@@ -60,6 +62,10 @@ struct OusterProductProfile {
     bool supported = false;
     bool revision_inferred = false;
     bool fallback_revision = false;
+    /// The request named a hardware revision this catalog does not know (a
+    /// typo such as "rev7.0"). The profile is then unsupported: running an
+    /// inferred or fallback revision would look like the one asked for.
+    bool unrecognized_revision = false;
 
     // Optical detection calibration at 100 klx. D90 values are vendor
     // specifications. D50 is populated where historical data publishes it;
@@ -88,6 +94,10 @@ struct OusterProductProfile {
     // Detection ranges are specified at this column rate. Active-mode range
     // and precision scale relative to this reference rate.
     double reference_columns_per_second = 10240.0;
+
+    // SIGNAL response measured on recordings of this product. Empty where
+    // none calibrate it; channel models then keep the inverse-square model.
+    OusterSignalResponse signal_response;
 };
 
 struct OusterProductProfileRequest {
@@ -110,7 +120,10 @@ const char * toString(OusterRevision revision) noexcept;
 ///
 /// Unknown or ambiguous part numbers use a conservative model-specific
 /// fallback and set fallback_revision. Incompatible model/revision pairs are
-/// preserved for diagnostics and returned with supported=false.
+/// preserved for diagnostics and returned with supported=false. A
+/// hardware_revision that is neither "auto", empty, nor a known revision is
+/// not guessed at: the result has unrecognized_revision set and
+/// supported=false.
 OusterProductProfile resolveOusterProductProfile(
     const OusterProductProfileRequest & request);
 

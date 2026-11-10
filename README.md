@@ -130,6 +130,21 @@ They may differ even for a direct return when the simulator casts from the
 translated beam origin but Ouster's packet convention reports the
 lidar-origin-equivalent range; transmitted and ghost paths may separate them
 further.
+
+Rev7 OS0 and OS1 profiles carry a measured SIGNAL response
+(`signal_response.hpp`) fitted to Ouster's public sample recordings: the linear
+signal of a 100% diffuse target against range, the L3 detector's saturation
+near 5,700, and shot noise with a 1.34 excess factor plus a 0.8% relative floor.
+`opticalChannelModelConfigFromProfile()` copies it with the active mode's
+shots-per-measurement gain, and the channel model scales it by
+`base_signal / kReferenceBaseSignal`. Products without recordings keep the
+inverse-square `base_signal * reflectance / path_length^2` with Poisson noise.
+
+Reflectivity follows Ouster's calibrated scale (`quantizeOusterReflectivity()`):
+apparent reflectance 0-1 maps linearly to bytes 0-100, and a log2 band for
+retroreflectors reaches 255 at 864 times a 100% diffuse target, about 15.9
+bytes per doubling.
+
 The integer mixer and open-interval uniform mapping are bit-exact contract
 surfaces. Gaussian and noisy-channel goldens are frozen for the supported
 toolchain; different `libm` implementations are compared with documented
@@ -143,7 +158,10 @@ returns canonical measurement-major output. Its edge topology intentionally
 matches standalone `gz_sensors_ouster`: existing cardinal neighbors only,
 no first/last-column wrap, a neighboring miss or raw reported-range jump above
 the configured threshold marks an edge, and the 50% edge gate precedes normal
-dropout and channel noise. The shared contract uses the firing-keyed
+dropout and channel noise. A return of kind `kMedium` (smoke, dust, fog) is
+outside that topology: it is never on an edge, and a medium neighbor does not
+put a surface return on one, since its range is scattered per firing by the
+medium rather than set by geometry. The shared contract uses the firing-keyed
 `kEdgeSuppression` random lane instead of Gazebo's mutable backend generator,
 which makes output independent of worker completion and input ordering. Scalar
 processing rejects calls when edge suppression is enabled so an embedding

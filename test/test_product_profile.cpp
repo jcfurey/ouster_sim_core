@@ -109,6 +109,48 @@ TEST(OusterProductProfile, CoversEveryRev7Model)
     EXPECT_TRUE(dome.supported);
 }
 
+TEST(OusterProductProfile, RecordedRev7ModelsCarryMeasuredSignalResponses)
+{
+    const auto os0 = profile("OS0-128", "rev07");
+    const auto os1 = profile("OS1-64", "rev07", 3, 2, 64);
+    const auto os1_71 = profile("OS1-128", "rev07.1", 3, 2);
+    for (const auto * value : {&os0, &os1, &os1_71}) {
+        EXPECT_TRUE(value->signal_response.measured());
+        EXPECT_NO_THROW(validateSignalResponse(value->signal_response));
+        EXPECT_DOUBLE_EQ(value->signal_response.columns_per_second, 10240.0);
+    }
+
+    // Spot values of the fitted responses at 1024x10 (independently computed
+    // from the documented closed form): a dark target at OS1 mid range, and
+    // the near-saturated returns both models give a bright target at 1 m.
+    EXPECT_NEAR(
+        evaluateSignalResponse(os1.signal_response, 0.1, 10.0, 1.0, 1.0).mean,
+        1348.53, 0.01);
+    EXPECT_NEAR(
+        evaluateSignalResponse(os1.signal_response, 0.5, 1.0, 1.0, 1.0).mean,
+        4281.59, 0.01);
+    EXPECT_NEAR(
+        evaluateSignalResponse(os0.signal_response, 0.5, 1.0, 1.0, 1.0).mean,
+        3778.14, 0.01);
+    // The OS0 collects about a ninth of the OS1's far-field signal.
+    EXPECT_NEAR(
+        evaluateSignalResponse(os0.signal_response, 0.5, 150.0, 1.0, 1.0).mean,
+        6.18, 0.01);
+    EXPECT_NEAR(
+        evaluateSignalResponse(os1.signal_response, 0.5, 150.0, 1.0, 1.0).mean,
+        43.73, 0.01);
+
+    // Products without recordings keep the inverse-square model.
+    for (const auto & value : {
+             profile("OS2-128", "rev07", 2, 5),
+             profile("OSDome-128", "rev07"),
+             profile("OS1-128", "rev08", 4, 0),
+             profile("OS1-64", "rev06", 2, 5, 64),
+             profile("OS1-64", "gen1", 2, 2, 64)}) {
+        EXPECT_FALSE(value.signal_response.measured()) << value.id;
+    }
+}
+
 TEST(OusterProductProfile, RejectsImpossibleProductRevisionPairs)
 {
     EXPECT_FALSE(profile("OS2-128", "rev08", 4, 0).supported);
@@ -161,10 +203,28 @@ TEST(OusterProductProfile, MarksAmbiguousAndInvalidRevisionsAsFallback)
     EXPECT_EQ(ambiguous.revision, OusterRevision::Rev06);
     EXPECT_TRUE(ambiguous.fallback_revision);
 
-    request.hardware_revision = "definitely-not-a-revision";
-    const auto invalid = resolveOusterProductProfile(request);
-    EXPECT_EQ(invalid.revision, OusterRevision::Rev06);
-    EXPECT_TRUE(invalid.fallback_revision);
+    // A revision the caller named but the catalog does not know is refused,
+    // also where the part number or firmware would have settled it: running
+    // another revision would look like the one asked for.
+    for (const char * typo : {"definitely-not-a-revision", "rev7.0", "gen2"}) {
+        request.hardware_revision = typo;
+        const auto invalid = resolveOusterProductProfile(request);
+        EXPECT_TRUE(invalid.unrecognized_revision) << typo;
+        EXPECT_FALSE(invalid.supported) << typo;
+        EXPECT_FALSE(invalid.fallback_revision) << typo;
+        EXPECT_EQ(invalid.revision, OusterRevision::Unknown) << typo;
+    }
+    request.product_line = "OS1-64";
+    request.product_part_number = "840-102145-D";
+    request.hardware_revision = "rev7.0";
+    const auto inferable = resolveOusterProductProfile(request);
+    EXPECT_TRUE(inferable.unrecognized_revision);
+    EXPECT_FALSE(inferable.supported);
+    request.hardware_revision = "auto";
+    const auto inferred = resolveOusterProductProfile(request);
+    EXPECT_FALSE(inferred.unrecognized_revision);
+    EXPECT_TRUE(inferred.supported);
+    EXPECT_EQ(inferred.revision, OusterRevision::RevD);
 }
 
 TEST(OusterProductProfile, FirmwareAndPacketProfileAffectResolution)

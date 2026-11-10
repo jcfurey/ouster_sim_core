@@ -145,10 +145,11 @@ TEST(OpticalChannelModel, DocumentedNoiselessGoldenVectors)
     retro.apparent_reflectance = 2.0;
     retro.ambient_near_ir_factor = 0.0;
     const auto retro_output = model.process(retro, context);
-    // 100 + log2(2)*22 is the first retroreflective-band anchor.
+    // 100 + log2(2) * 155/log2(864) = 115.9: one doubling into the
+    // retroreflective band.
     EXPECT_EQ(retro_output.range_mm, 4'000u);
     EXPECT_EQ(retro_output.signal, 100u);
-    EXPECT_EQ(retro_output.reflectivity, 122u);
+    EXPECT_EQ(retro_output.reflectivity, 115u);
     EXPECT_EQ(retro_output.near_ir, 0u);
 
     auto saturated = surface(3, 0, 0.5);
@@ -165,6 +166,24 @@ TEST(OpticalChannelModel, DocumentedNoiselessGoldenVectors)
     EXPECT_EQ(
         saturated_output.near_ir,
         std::numeric_limits<std::uint16_t>::max());
+}
+
+TEST(OpticalChannelModel, ReflectivityReaches255At864TimesDiffuse)
+{
+    using ouster_sim_core::quantizeOusterReflectivity;
+    // Ouster's calibrated scale: 100 is a 100% diffuse target and 255 is
+    // 864 times one, so each doubling adds 155 / log2(864) = 15.9.
+    EXPECT_EQ(quantizeOusterReflectivity(1.0), 100u);
+    EXPECT_EQ(quantizeOusterReflectivity(4.0), 131u);
+    EXPECT_EQ(quantizeOusterReflectivity(64.0), 195u);
+    EXPECT_EQ(quantizeOusterReflectivity(850.0), 254u);
+    EXPECT_EQ(quantizeOusterReflectivity(870.0), 255u);
+    std::uint8_t previous = 0;
+    for (double reflectance = 0.5; reflectance < 2'000.0; reflectance *= 1.01) {
+        const auto byte = quantizeOusterReflectivity(reflectance);
+        EXPECT_GE(byte, previous) << reflectance;
+        previous = byte;
+    }
 }
 
 TEST(OpticalChannelModel, BlackIsDifferentFromMissingReflectance)
@@ -404,11 +423,202 @@ TEST(OpticalChannelModel, ProductProfileFactoryAppliesActiveModeScaling)
     EXPECT_DOUBLE_EQ(
         config.edge_suppression_probability,
         ouster_sim_core::kReferenceEdgeSuppressionProbability);
+    // A profile without recordings keeps the inverse-square model.
+    EXPECT_FALSE(config.signal_response.measured());
+    EXPECT_DOUBLE_EQ(config.signal_mode_gain, 1.0);
+}
+
+// A 100% target collects 1e4 at the 2 m knot (and, held, anywhere closer) and
+// 2e4 at the 10 m knot; the detector saturates at 5000.
+ouster_sim_core::OusterSignalResponse handCheckedResponse()
+{
+    ouster_sim_core::OusterSignalResponse response;
+    response.knot_count = 2;
+    response.range_m[0] = 2.0;
+    response.range_m[1] = 10.0;
+    response.signal_m2[0] = 4.0e4;
+    response.signal_m2[1] = 2.0e6;
+    response.columns_per_second = 10'240.0;
+    response.saturation_signal = 5'000.0;
+    response.shot_noise_factor = 1.25;
+    response.relative_noise = 0.01;
+    return response;
+}
+
+// The documented saturation and its slope, evaluated independently with pow.
+double saturated(double linear)
+{
+    return linear / std::pow(1.0 + std::pow(linear / 5'000.0, 4.0 / 3.0), 0.75);
+}
+
+double saturationSlope(double linear)
+{
+    return std::pow(1.0 + std::pow(linear / 5'000.0, 4.0 / 3.0), -1.75);
+}
+
+TEST(OpticalChannelModel, MeasuredSignalResponseFollowsItsKnotsAndSaturates)
+{
+    using ouster_sim_core::evaluateSignalResponse;
+    const auto response = handCheckedResponse();
+
+    // x = .5 * 1e4 = 5000, the saturation signal: c = 5000 * 2^(-3/4).
+    const auto at_knot = evaluateSignalResponse(response, 0.5, 2.0, 1.0, 1.0);
+    EXPECT_NEAR(at_knot.mean, 5'000.0 * std::pow(2.0, -0.75), 1.0e-9);
+    EXPECT_NEAR(
+        at_knot.sigma,
+        std::hypot(1.25 * saturationSlope(5'000.0) * std::sqrt(5'000.0),
+                   0.01 * saturated(5'000.0)),
+        1.0e-9);
+    // Closer than the first knot the linear signal holds.
+    const auto near = evaluateSignalResponse(response, 0.5, 0.7, 1.0, 1.0);
+    EXPECT_DOUBLE_EQ(near.mean, at_knot.mean);
+    EXPECT_DOUBLE_EQ(near.sigma, at_knot.sigma);
+    // Midway, signal_m2 interpolates linearly: (4e4 + 2e6) / 2 / 6^2.
+    const auto mid = evaluateSignalResponse(response, 0.3, 6.0, 1.0, 1.0);
+    EXPECT_NEAR(mid.mean, saturated(0.3 * 1.02e6 / 36.0), 1.0e-9);
+    // Beyond the last knot the far field falls as 1/r^2.
+    const auto far = evaluateSignalResponse(response, 0.25, 20.0, 1.0, 1.0);
+    EXPECT_NEAR(far.mean, saturated(0.25 * 2.0e6 / 400.0), 1.0e-9);
+
+    // Gain scales the linear signal; m scales the output and sigma by sqrt(m).
+    const auto doubled = evaluateSignalResponse(response, 0.25, 2.0, 2.0, 1.0);
+    EXPECT_DOUBLE_EQ(doubled.mean, at_knot.mean);
+    const auto half_shots =
+        evaluateSignalResponse(response, 0.5, 2.0, 1.0, 0.5);
+    EXPECT_DOUBLE_EQ(half_shots.mean, 0.5 * at_knot.mean);
+    EXPECT_NEAR(half_shots.sigma, at_knot.sigma * std::sqrt(0.5), 1.0e-12);
+
+    // A retroreflector saturates; only the relative floor is left.
+    const auto retro = evaluateSignalResponse(response, 1.0e300, 3.0, 1.0, 1.0);
+    EXPECT_DOUBLE_EQ(retro.mean, 5'000.0);
+    EXPECT_DOUBLE_EQ(retro.sigma, 50.0);
+    const auto overflow = evaluateSignalResponse(
+        response, std::numeric_limits<double>::max(), 3.0, 1.0, 1.0);
+    EXPECT_DOUBLE_EQ(overflow.mean, 5'000.0);
+    EXPECT_DOUBLE_EQ(overflow.sigma, 50.0);
+    const auto bright = evaluateSignalResponse(response, 1.0e6, 3.0, 1.0, 1.0);
+    EXPECT_LT(bright.mean, 5'000.0);
+    EXPECT_GT(bright.mean, 4'999.0);
+
+    const auto mean = [&](double rho, double range, double gain, double m) {
+        return evaluateSignalResponse(response, rho, range, gain, m).mean;
+    };
+    for (const double bad : {0.0, -1.0,
+                             std::numeric_limits<double>::quiet_NaN(),
+                             std::numeric_limits<double>::infinity()}) {
+        EXPECT_EQ(mean(bad, 3.0, 1.0, 1.0), 0.0);
+        EXPECT_EQ(mean(0.5, bad, 1.0, 1.0), 0.0);
+        EXPECT_EQ(mean(0.5, 3.0, bad, 1.0), 0.0);
+        EXPECT_EQ(mean(0.5, 3.0, 1.0, bad), 0.0);
+    }
+    EXPECT_EQ(
+        evaluateSignalResponse(
+            ouster_sim_core::OusterSignalResponse{}, 0.5, 3.0, 1.0, 1.0).mean,
+        0.0);
+}
+
+TEST(OpticalChannelModel, SignalModeGainCountsShotsPerMeasurement)
+{
+    using ouster_sim_core::signalModeGain;
+    const auto response = handCheckedResponse();
+    EXPECT_DOUBLE_EQ(signalModeGain(response, 1024, 10.0), 1.0);
+    EXPECT_DOUBLE_EQ(signalModeGain(response, 2048, 10.0), 0.5);
+    EXPECT_DOUBLE_EQ(signalModeGain(response, 1024, 20.0), 0.5);
+    EXPECT_DOUBLE_EQ(signalModeGain(response, 512, 10.0), 2.0);
+    // Two octaves either way, like the operating-mode range scale.
+    EXPECT_DOUBLE_EQ(signalModeGain(response, 256, 5.0), 4.0);
+    EXPECT_DOUBLE_EQ(signalModeGain(response, 4096, 20.0), 0.25);
+    EXPECT_DOUBLE_EQ(signalModeGain(response, 0, 10.0), 1.0);
+    EXPECT_DOUBLE_EQ(signalModeGain(response, 1024, 0.0), 1.0);
+    EXPECT_DOUBLE_EQ(
+        signalModeGain(ouster_sim_core::OusterSignalResponse{}, 2048, 10.0),
+        1.0);
+}
+
+TEST(OpticalChannelModel, MeasuredSignalResponseIsValidated)
+{
+    using ouster_sim_core::OusterSignalResponse;
+    EXPECT_NO_THROW(OpticalChannelModel{OpticalChannelModelConfig{}});
+    const auto valid = handCheckedResponse();
+    std::vector<OusterSignalResponse> invalid(7, valid);
+    invalid[0].range_m[1] = 2.0;            // not ascending
+    invalid[1].range_m[0] = 0.0;            // not positive
+    invalid[2].signal_m2[1] = -1.0;
+    invalid[3].saturation_signal = 0.0;
+    invalid[4].columns_per_second = std::numeric_limits<double>::infinity();
+    invalid[5].relative_noise = -0.01;
+    invalid[6].knot_count = OusterSignalResponse::kMaxKnots + 1;
+    for (const auto & response : invalid) {
+        OpticalChannelModelConfig config;
+        config.signal_response = response;
+        EXPECT_THROW(OpticalChannelModel{config}, std::invalid_argument);
+    }
+    OpticalChannelModelConfig config;
+    config.signal_response = valid;
+    EXPECT_NO_THROW(OpticalChannelModel{config});
+    config.signal_mode_gain = 0.0;
+    EXPECT_THROW(OpticalChannelModel{config}, std::invalid_argument);
+}
+
+TEST(OpticalChannelModel, VersionedMeasuredSignalGoldenVector)
+{
+    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 5);
+    OpticalChannelModelConfig config;
+    config.signal_response = handCheckedResponse();
+    config.signal_mode_gain = 0.5;
+    config.base_signal = 1'600.0;  // twice the reference sensitivity
+    const OpticalChannelModel noiseless(config);
+
+    auto input = surface(31, 5, 2.0);
+    input.apparent_reflectance = 0.25;
+    // x = 2 * .25 * 1e4 = 5000 -> c = 2973.02, half the shots -> 1486.5.
+    EXPECT_EQ(noiseless.process(input, {}).signal, 1'486u);
+    // Missing reflectance uses the signal fallback of 1.0: x = 2e4.
+    input.apparent_reflectance.reset();
+    EXPECT_NEAR(
+        noiseless.process(input, {}).signal, 0.5 * saturated(2.0e4), 1.0);
+    // A present black surface still returns no signal.
+    input.apparent_reflectance = 0.0;
+    EXPECT_EQ(noiseless.process(input, {}).signal, 0u);
+
+    // Noise: sigma = sqrt(.5) * hypot(1.25 * dc/dx * sqrt(5000), .01 * c)
+    // = 28.1; this key draws -0.72 sigma.
+    config.signal_noise_scale = 1.0;
+    const OpticalChannelModel noisy(config);
+    input.apparent_reflectance = 0.25;
+    EXPECT_EQ(noisy.process(input, {12345, 77, 4}).signal, 1'466u);
+}
+
+TEST(OpticalChannelModel, MeasuredSignalNoiseHasTheModelledSpread)
+{
+    OpticalChannelModelConfig config;
+    config.signal_response = handCheckedResponse();
+    config.signal_noise_scale = 1.0;
+    const OpticalChannelModel model(config);
+    const auto expected = ouster_sim_core::evaluateSignalResponse(
+        config.signal_response, 0.5, 2.0, 1.0, 1.0);
+
+    double sum = 0.0;
+    double sum_sq = 0.0;
+    constexpr std::uint32_t kSamples = 20'000;
+    for (std::uint32_t i = 0; i < kSamples; ++i) {
+        auto input = surface(
+            i % 2048, static_cast<std::uint16_t>(i / 2048), 2.0);
+        input.apparent_reflectance = 0.5;
+        const double signal = model.process(input, {99, 1, 0}).signal;
+        sum += signal;
+        sum_sq += signal * signal;
+    }
+    const double mean = sum / kSamples;
+    const double stddev = std::sqrt(sum_sq / kSamples - mean * mean);
+    // Integer truncation lowers the mean by about half a count.
+    EXPECT_NEAR(mean, expected.mean - 0.5, 1.0);
+    EXPECT_NEAR(stddev, expected.sigma, 0.03 * expected.sigma);
 }
 
 TEST(OpticalChannelModel, CounterRngHasStableGoldenWordAndIndependentLanes)
 {
-    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 2);
+    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 5);
     OpticalRandomKey key;
     key.sensor_stream_id = 0x1020304050607080ULL;
     key.epoch = 3;
@@ -543,7 +753,7 @@ TEST(OpticalChannelModel, CompleteRevolutionUsesGazeboCardinalTopology)
 
 TEST(OpticalChannelModel, VersionedEdgeSuppressionGoldenVector)
 {
-    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 2);
+    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 5);
     const auto table = makeFrameTable();
     auto inputs = makeFrame(*table, 7);
     inputs[4].path_length_m = 10.0;
@@ -625,6 +835,41 @@ TEST(OpticalChannelModel, GazeboReferenceTopologyDoesNotWrapAzimuthSeam)
     EXPECT_TRUE(output[3].hasReturn());
 }
 
+TEST(OpticalChannelModel, MediumReturnsAreNotDepthEdges)
+{
+    const auto table = makeFrameTable();
+    OpticalChannelModelConfig config;
+    config.edge_discontinuity_threshold_m = 5.0;
+    config.edge_suppression_probability = 1.0;  // every edge drops; no draw
+    const OpticalChannelModel model(config);
+    const auto kept = [&](const std::vector<NormalizedOpticalReturn> & inputs) {
+        std::set<std::size_t> indices;
+        const auto output = model.processRevolution(inputs, *table, {});
+        for (std::size_t index = 0; index < output.size(); ++index) {
+            if (output[index].hasReturn()) {
+                indices.insert(index);
+            }
+        }
+        return indices;
+    };
+
+    // A surface 10 m nearer than the wall around it: it and its four
+    // cardinal neighbors are on a depth edge.
+    auto inputs = makeFrame(*table, 7);
+    inputs[4].path_length_m = inputs[4].reported_range_m = 10.0;
+    EXPECT_EQ(kept(inputs), (std::set<std::size_t>{0, 2, 6, 8, 9, 10, 11}));
+
+    // The same range returned by smoke in front of the wall is no edge: its
+    // range is scattered through the medium, not stepped by a surface.
+    inputs[4].return_kind = OpticalReturnKind::kMedium;
+    inputs[4].geometric_hit = false;
+    EXPECT_EQ(kept(inputs).size(), inputs.size());
+
+    // Surfaces beside it still edge against each other.
+    inputs[7].path_length_m = inputs[7].reported_range_m = 10.0;
+    EXPECT_EQ(kept(inputs), (std::set<std::size_t>{0, 1, 2, 3, 4, 5, 9, 11}));
+}
+
 TEST(OpticalChannelModel, CompleteRevolutionRejectsBrokenCoverage)
 {
     const auto table = makeFrameTable();
@@ -664,7 +909,7 @@ TEST(OpticalChannelModel, CompleteRevolutionRejectsBrokenCoverage)
 
 TEST(OpticalChannelModel, VersionedNoisyChannelGoldenVector)
 {
-    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 2);
+    static_assert(ouster_sim_core::kOpticalChannelContractVersion == 5);
     OpticalChannelModelConfig config;
     config.range_resolution_m = 0.001;
     config.range_noise_min_std_m = 0.01;

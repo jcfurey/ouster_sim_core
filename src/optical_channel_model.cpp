@@ -19,7 +19,9 @@ constexpr double kMinimumSignalDenominator = 0.0001;
 constexpr double kRangeFractionDenominatorFloor = 0.1;
 constexpr double kLambertianByteMaximum = 100.0;
 constexpr double kReflectivityByteMaximum = 255.0;
-constexpr double kRetroreflectiveLogSlope = 22.0;
+// Ouster's calibrated scale puts byte 255 at 864 times a 100% diffuse
+// target: (255 - 100) / log2(864) bytes per doubling.
+constexpr double kRetroreflectiveLogSlope = 15.889470787400022;
 constexpr double kDropoutReflectanceFloor = 0.33;
 constexpr double kDropoutReflectanceScaleMaximum = 3.0;
 constexpr double kRangeNoiseReflectanceFloor = 0.25;
@@ -156,6 +158,12 @@ void validateConfig(const OpticalChannelModelConfig & config)
     requireFiniteNonnegative(
         config.detection.rolloff_fraction,
         "detection rolloff_fraction");
+    validateSignalResponse(config.signal_response);
+    if (!std::isfinite(config.signal_mode_gain) ||
+        config.signal_mode_gain <= 0.0) {
+        throw std::invalid_argument(
+            "signal_mode_gain must be finite and greater than zero");
+    }
 }
 
 void validateInput(const NormalizedOpticalReturn & input)
@@ -390,12 +398,23 @@ bool hasGazeboReferenceEdge(
     const auto height = firing_table.channelCount();
     const double range_m = input.reported_range_m;
 
+    // A return from a participating medium (smoke, dust, fog) has its range
+    // drawn per firing from the medium's received-power profile. That scatter
+    // is not a surface edge: such a return is never on an edge, and as a
+    // neighbor it says nothing about the surfaces around it.
+    if (input.return_kind == OpticalReturnKind::kMedium) {
+        return false;
+    }
+
     const auto discontinuous = [&](std::uint32_t neighbor_measurement,
                                    std::uint16_t neighbor_ring) {
         const std::size_t index =
             static_cast<std::size_t>(neighbor_measurement) * height +
             neighbor_ring;
         const auto & neighbor = *canonical[index];
+        if (neighbor.return_kind == OpticalReturnKind::kMedium) {
+            return false;
+        }
         return !neighbor.hasReturn() ||
                neighbor.reported_range_m < kGazeboValidDepthMinimumM ||
                std::fabs(neighbor.reported_range_m - range_m) > threshold_m;
@@ -591,6 +610,9 @@ OpticalChannelModelConfig opticalChannelModelConfigFromProfile(
             ? config.detection.range_10_d90_m
             : config.maximum_range_m;
     config.false_alarm_rate = profile.false_positive_rate;
+    config.signal_response = profile.signal_response;
+    config.signal_mode_gain = signalModeGain(
+        profile.signal_response, columns_per_frame, lidar_hz);
 
     // Run the same validation as direct construction before exposing the
     // derived values to an embedding package.
@@ -701,16 +723,30 @@ QuantizedOpticalReturn OpticalChannelModel::processScalar(
 
     const double reflectance_for_signal = input.apparent_reflectance.value_or(
         config_.missing_reflectance_for_signal);
-    double signal = nonnegativeProductOverSquaredDenominator(
-        config_.base_signal,
-        reflectance_for_signal,
-        input.path_length_m);
+    double signal = 0.0;
+    double signal_sigma = 0.0;
+    if (config_.signal_response.measured()) {
+        const auto estimate = evaluateSignalResponse(
+            config_.signal_response,
+            reflectance_for_signal,
+            input.path_length_m,
+            config_.base_signal / kReferenceBaseSignal,
+            config_.signal_mode_gain);
+        signal = estimate.mean;
+        signal_sigma = estimate.sigma;
+    } else {
+        signal = nonnegativeProductOverSquaredDenominator(
+            config_.base_signal,
+            reflectance_for_signal,
+            input.path_length_m);
+        signal_sigma = std::sqrt(std::max(signal, 0.0));
+    }
     if (config_.signal_noise_scale > 0.0 && std::isfinite(signal)) {
         signal = std::max(
             signal + deterministicOpticalStandardNormal(
                 context.seed,
                 randomKey(input, context, OpticalRandomEffect::kSignalNoise)) *
-                std::sqrt(std::max(signal, 0.0)) *
+                signal_sigma *
                 config_.signal_noise_scale,
             0.0);
     }
