@@ -180,6 +180,9 @@ The packet-pacing policy computes absolute delivery deadlines from an injected
 monotonic clock. It follows 80% of the observed producer cadence, falls back to
 the nominal period after startup/pause/reset, and shifts deadlines after resume
 without owning a thread or publishing API.
+Queued adapters can pass the interval between consecutive produced frames to
+`beginFrame()`. Measure it before frames can be overwritten: inferring cadence
+from delivered frames after a backlog would stretch packet spacing further.
 
 `OusterMetadata::sourceJson()` preserves the input bytes for audit.
 `publishedJson()` normally returns the same JSON; when a modern packet

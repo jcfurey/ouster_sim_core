@@ -87,6 +87,15 @@ PacketPacingFramePlan PacketPacingPolicy::beginFrame(
     PacketPacingTimePoint drain_started_at,
     std::size_t packet_count)
 {
+    return beginFrame(produced_at, drain_started_at, packet_count, std::nullopt);
+}
+
+PacketPacingFramePlan PacketPacingPolicy::beginFrame(
+    PacketPacingTimePoint produced_at,
+    PacketPacingTimePoint drain_started_at,
+    std::size_t packet_count,
+    std::optional<std::chrono::nanoseconds> producer_period)
+{
     if (paused_) {
         throw std::logic_error("cannot begin a packet frame while paused");
     }
@@ -102,13 +111,16 @@ PacketPacingFramePlan PacketPacingPolicy::beginFrame(
             "drain_started_at must not precede produced_at");
     }
 
-    std::optional<std::chrono::nanoseconds> observed_period;
-    if (previous_produced_at_.has_value()) {
+    if (producer_period.has_value() && *producer_period <= std::chrono::nanoseconds::zero()) {
+        throw std::invalid_argument("producer_period must be greater than zero");
+    }
+    auto observed_period = producer_period;
+    if (!observed_period.has_value() && previous_produced_at_.has_value()) {
         observed_period = positiveDifference(
             produced_at, *previous_produced_at_);
     }
     const bool uses_observation = observed_period.has_value();
-    const auto producer_period = uses_observation
+    const auto selected_period = uses_observation
         ? *observed_period
         : nominal_frame_period_;
     const auto drain_span = delivery_mode_ == PacketDeliveryMode::kBurst
@@ -142,7 +154,7 @@ PacketPacingFramePlan PacketPacingPolicy::beginFrame(
     return PacketPacingFramePlan{
         packet_count,
         uses_observation,
-        producer_period,
+        selected_period,
         drain_span,
         packet_spacing,
         drain_started_at,

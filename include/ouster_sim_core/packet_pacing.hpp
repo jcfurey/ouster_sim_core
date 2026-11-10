@@ -70,6 +70,16 @@ public:
         PacketPacingTimePoint drain_started_at,
         std::size_t packet_count);
 
+    /// Queued producers should supply the interval between consecutive
+    /// produced frames, including frames overwritten before delivery. Without
+    /// that observation, cadence is inferred from frames passed to this method.
+    /// A supplied interval must be positive.
+    PacketPacingFramePlan beginFrame(
+        PacketPacingTimePoint produced_at,
+        PacketPacingTimePoint drain_started_at,
+        std::size_t packet_count,
+        std::optional<std::chrono::nanoseconds> producer_period);
+
     bool hasActiveFrame() const noexcept { return active_; }
     bool paused() const noexcept { return paused_; }
     std::size_t nextPacketIndex() const noexcept { return next_packet_index_; }

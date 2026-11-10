@@ -97,6 +97,29 @@ TEST(PacketPacing, ExposesDriftFreeAbsoluteDeadlines)
     EXPECT_FALSE(policy.nextDeadline().has_value());
 }
 
+TEST(PacketPacing, DroppedQueuedFramesDoNotSlowProducerCadence)
+{
+    PacketPacingPolicy policy(100ms);
+    policy.beginFrame(at(1s), at(1s), 4);
+    finishFrame(policy);
+
+    // The consumer missed two frames during a transport stall. Their loss
+    // must not turn a 100 ms producer into a 300 ms packet delivery schedule.
+    const auto recovered = policy.beginFrame(at(1300ms), at(1310ms), 4, 100ms);
+    EXPECT_TRUE(recovered.uses_observed_period);
+    EXPECT_EQ(recovered.producer_period, 100ms);
+    EXPECT_EQ(recovered.drain_span, 80ms);
+    EXPECT_EQ(recovered.last_deadline, at(1370ms));
+    finishFrame(policy);
+
+    // Follow real producer slowdowns and speedups even when frames are lost.
+    const auto slower = policy.beginFrame(at(1900ms), at(1900ms), 4, 200ms);
+    EXPECT_EQ(slower.drain_span, 160ms);
+    finishFrame(policy);
+    const auto faster = policy.beginFrame(at(2100ms), at(2100ms), 4, 50ms);
+    EXPECT_EQ(faster.drain_span, 40ms);
+}
+
 TEST(PacketPacing, OnePacketIsDueImmediatelyAndCompletesAtomically)
 {
     PacketPacingPolicy policy(100ms);
@@ -226,6 +249,8 @@ TEST(PacketPacing, RejectsInvalidConfigurationAndStateTransitions)
     EXPECT_THROW(
         policy.beginFrame(at(1s), at(1s), 80'001),
         std::invalid_argument);
+    EXPECT_THROW(policy.beginFrame(at(1s), at(1s), 1, 0ns), std::invalid_argument);
+    EXPECT_THROW(policy.beginFrame(at(1s), at(1s), 1, -1ms), std::invalid_argument);
 
     policy.beginFrame(at(1s), at(1s), 1);
     EXPECT_THROW(
